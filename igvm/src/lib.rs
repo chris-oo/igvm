@@ -1975,6 +1975,8 @@ impl From<Arch> for IgvmArchitecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IgvmRevision {
     V1,
+    #[cfg(feature = "unstable")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
     V2 {
         /// Architecture for the IGVM file.
         arch: Arch,
@@ -1987,6 +1989,7 @@ impl IgvmRevision {
     fn arch(&self) -> Arch {
         match self {
             IgvmRevision::V1 => Arch::X64,
+            #[cfg(feature = "unstable")]
             IgvmRevision::V2 { arch, .. } => *arch,
         }
     }
@@ -1994,6 +1997,7 @@ impl IgvmRevision {
     fn page_size(&self) -> u64 {
         match self {
             IgvmRevision::V1 => PAGE_SIZE_4K,
+            #[cfg(feature = "unstable")]
             IgvmRevision::V2 { page_size, .. } => *page_size as u64,
         }
     }
@@ -2001,6 +2005,7 @@ impl IgvmRevision {
     fn fixed_header_size(&self) -> usize {
         match self {
             IgvmRevision::V1 => size_of::<IGVM_FIXED_HEADER>(),
+            #[cfg(feature = "unstable")]
             IgvmRevision::V2 { .. } => size_of::<IGVM_FIXED_HEADER_V2>(),
         }
     }
@@ -2105,6 +2110,7 @@ fn extract_individual_masks(mut compatibility_mask: u32) -> Vec<u32> {
 #[derive(Debug, Clone)]
 enum FixedHeader {
     V1(IGVM_FIXED_HEADER),
+    #[cfg(feature = "unstable")]
     V2(IGVM_FIXED_HEADER_V2),
 }
 
@@ -2113,6 +2119,7 @@ impl FixedHeader {
     fn as_bytes(&self) -> &[u8] {
         match self {
             FixedHeader::V1(raw) => raw.as_bytes(),
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.as_bytes(),
         }
     }
@@ -2120,6 +2127,7 @@ impl FixedHeader {
     fn set_total_file_size(&mut self, size: u32) {
         match self {
             FixedHeader::V1(raw) => raw.total_file_size = size,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.total_file_size = size,
         }
     }
@@ -2127,6 +2135,7 @@ impl FixedHeader {
     fn set_checksum(&mut self, checksum: u32) {
         match self {
             FixedHeader::V1(raw) => raw.checksum = checksum,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.checksum = checksum,
         }
     }
@@ -2134,6 +2143,7 @@ impl FixedHeader {
     fn magic(&self) -> u32 {
         match self {
             FixedHeader::V1(raw) => raw.magic,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.magic,
         }
     }
@@ -2141,6 +2151,7 @@ impl FixedHeader {
     fn format_version(&self) -> u32 {
         match self {
             FixedHeader::V1(raw) => raw.format_version,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.format_version,
         }
     }
@@ -2148,6 +2159,7 @@ impl FixedHeader {
     fn total_file_size(&self) -> u32 {
         match self {
             FixedHeader::V1(raw) => raw.total_file_size,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.total_file_size,
         }
     }
@@ -2155,6 +2167,7 @@ impl FixedHeader {
     fn variable_header_offset(&self) -> u32 {
         match self {
             FixedHeader::V1(raw) => raw.variable_header_offset,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.variable_header_offset,
         }
     }
@@ -2162,6 +2175,7 @@ impl FixedHeader {
     fn variable_header_size(&self) -> u32 {
         match self {
             FixedHeader::V1(raw) => raw.variable_header_size,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.variable_header_size,
         }
     }
@@ -2169,6 +2183,7 @@ impl FixedHeader {
     fn checksum(&self) -> u32 {
         match self {
             FixedHeader::V1(raw) => raw.checksum,
+            #[cfg(feature = "unstable")]
             FixedHeader::V2(raw) => raw.checksum,
         }
     }
@@ -2563,6 +2578,7 @@ impl IgvmFile {
                 total_file_size: 0,
                 checksum: 0,
             }),
+            #[cfg(feature = "unstable")]
             IgvmRevision::V2 { arch, page_size } => FixedHeader::V2(IGVM_FIXED_HEADER_V2 {
                 magic: IGVM_MAGIC_VALUE,
                 format_version: IGVM_FORMAT_VERSION_2,
@@ -2639,6 +2655,7 @@ impl IgvmFile {
         let total_size = file.len();
 
         // Read the IGVM fixed header
+        #[cfg_attr(not(feature = "unstable"), allow(unused_mut))]
         let mut fixed_header = FixedHeader::V1(
             IGVM_FIXED_HEADER::read_from_prefix(file).ok_or(Error::InvalidFixedHeader)?,
         );
@@ -2649,6 +2666,7 @@ impl IgvmFile {
 
         let revision = match fixed_header.format_version() {
             IGVM_FORMAT_VERSION_1 => IgvmRevision::V1,
+            #[cfg(feature = "unstable")]
             IGVM_FORMAT_VERSION_2 => {
                 let v2 = IGVM_FIXED_HEADER_V2::read_from_prefix(file)
                     .ok_or(Error::InvalidFixedHeader)?;
@@ -3220,8 +3238,6 @@ impl IgvmFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hv_defs::HvArm64RegisterName;
-    use crate::hv_defs::HvRegisterValue;
 
     fn new_platform(
         compatibility_mask: u32,
@@ -3327,6 +3343,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg(feature = "unstable")]
         fn test_basic_v2() {
             let data1 = vec![1; PAGE_SIZE_4K as usize];
             let data2 = vec![2; PAGE_SIZE_4K as usize];
@@ -3366,6 +3383,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg(feature = "unstable")]
         fn test_basic_v2_aarch64() {
             let data1 = vec![1; PAGE_SIZE_4K as usize];
             let data2 = vec![2; PAGE_SIZE_4K as usize];
@@ -4239,8 +4257,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "unstable")]
     #[test]
     fn test_aarch64_vbs_vp_context() {
+        use crate::hv_defs::HvArm64RegisterName;
+        use crate::hv_defs::HvRegisterValue;
+
         let raw_header = IGVM_VHS_VP_CONTEXT {
             gpa: 0.into(),
             compatibility_mask: 0x1,
