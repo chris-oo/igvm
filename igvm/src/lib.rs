@@ -120,6 +120,7 @@ fn append_header<T: AsBytes>(
 
 /// Represents a structure in an IGVM variable header section, platform
 /// structure.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgvmPlatformHeader {
     SupportedPlatform(IGVM_VHS_SUPPORTED_PLATFORM),
@@ -240,6 +241,7 @@ impl IgvmPlatformHeader {
 
 /// Represents a structure in an IGVM variable header section, initialization
 /// structure.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgvmInitializationHeader {
     GuestPolicy {
@@ -597,6 +599,7 @@ impl IgvmInitializationHeader {
 
 /// Represents a structure in an IGVM variable header section, directive
 /// structure.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgvmDirectiveHeader {
     PageData {
