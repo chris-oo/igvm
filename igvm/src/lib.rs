@@ -24,7 +24,6 @@ use parsing::FromBytesExt;
 use range_map_vec::RangeMap;
 use registers::AArch64Register;
 use registers::X86Register;
-use sha2::Digest;
 use snp_defs::SevVmsa;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
