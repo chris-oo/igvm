@@ -24,6 +24,8 @@ use parsing::FromBytesExt;
 use range_map_vec::RangeMap;
 use registers::AArch64Register;
 use registers::X86Register;
+#[cfg(feature = "hash")]
+use sha2::Digest;
 use snp_defs::SevVmsa;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -207,6 +209,7 @@ impl FileDataSerializer {
         match self.file_data_map {
             FileDataSerializerImpl::NoDedup => None,
             FileDataSerializerImpl::DedupWithVec(ref map) => map.get(file_data).copied(),
+            #[cfg(feature = "hash")]
             FileDataSerializerImpl::DedupWithHash(ref map) => {
                 let digest = sha2::Sha256::digest(file_data);
                 map.get(&digest).copied()
@@ -220,6 +223,7 @@ impl FileDataSerializer {
             FileDataSerializerImpl::DedupWithVec(map) => {
                 map.insert(file_data.to_vec(), offset);
             }
+            #[cfg(feature = "hash")]
             FileDataSerializerImpl::DedupWithHash(map) => {
                 let digest = sha2::Sha256::digest(file_data);
                 map.insert(digest, offset);
