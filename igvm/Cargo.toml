@@ -25,6 +25,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "igvm"
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = []
+igvm-c = [] # Add exports that allow the library to be used from C
+hash = ["dep:sha2"]
+
 [dependencies]
 igvm_defs = { workspace = true, features = ["unstable"] }
 
@@ -33,10 +38,7 @@ range_map_vec.workspace = true
 crc32fast.workspace = true
 hex = { workspace = true, features = ["alloc"] }
 open-enum.workspace = true
+sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy = { workspace = true, features = ["alloc"] }
-
-[features]
-default = []
-igvm-c = [] # Add exports that allow the library to be used from C

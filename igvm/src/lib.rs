@@ -24,6 +24,7 @@ use parsing::FromBytesExt;
 use range_map_vec::RangeMap;
 use registers::AArch64Register;
 use registers::X86Register;
+use sha2::Digest;
 use snp_defs::SevVmsa;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -130,17 +131,54 @@ pub struct FileDataSerializer {
     /// The serialized file data.
     file_data: Vec<u8>,
     /// The map of file data to offset mapping data seen before.
-    file_data_map: HashMap<Vec<u8>, u32>,
+    // file_data_map: HashMap<Vec<u8>, u32>,
+    file_data_map: FileDataSerializerImpl,
+}
+
+/// The strategy to use in the serializer for deduplcating file data.
+pub enum FileDataSerializerStrategy {
+    /// Do not deduplicate data.
+    NoDedup,
+    /// Deduplicate data using a vector and hashmap.
+    DedupWithVec,
+    /// Deduplicate data using sha256 of the data and a hashmap.
+    #[cfg(feature = "hash")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "hash")))]
+    DedupWithHash,
+}
+
+enum FileDataSerializerImpl {
+    NoDedup,
+    DedupWithVec(HashMap<Vec<u8>, u32>),
+    #[cfg(feature = "hash")]
+    DedupWithHash(
+        HashMap<sha2::digest::generic_array::GenericArray<u8, sha2::digest::consts::U32>, u32>,
+    ),
 }
 
 impl FileDataSerializer {
     /// Create a new instance of the file data serializer, with the given
     /// starting file_offset.
     pub fn new(file_offset: usize) -> Self {
+        Self::new_with_strategy(file_offset, FileDataSerializerStrategy::NoDedup)
+    }
+
+    /// Create a new instance of the file data serializer, with the given
+    /// starting file_offset and dedup strategy.
+    pub fn new_with_strategy(file_offset: usize, strategy: FileDataSerializerStrategy) -> Self {
         Self {
             file_offset,
             file_data: Vec::new(),
-            file_data_map: HashMap::new(),
+            file_data_map: match strategy {
+                FileDataSerializerStrategy::NoDedup => FileDataSerializerImpl::NoDedup,
+                FileDataSerializerStrategy::DedupWithVec => {
+                    FileDataSerializerImpl::DedupWithVec(HashMap::new())
+                }
+                #[cfg(feature = "hash")]
+                FileDataSerializerStrategy::DedupWithHash => {
+                    FileDataSerializerImpl::DedupWithHash(HashMap::new())
+                }
+            },
         }
     }
 
@@ -152,8 +190,8 @@ impl FileDataSerializer {
     /// Write the given file_data to the serializer. Returns the file_offset to
     /// be encoded into the header.
     pub fn write_file_data(&mut self, file_data: &[u8]) -> u32 {
-        if let Some(offset) = self.file_data_map.get(file_data) {
-            return *offset;
+        if let Some(offset) = self.find_file_data(file_data) {
+            return offset;
         }
 
         let offset = self.file_offset;
@@ -161,9 +199,33 @@ impl FileDataSerializer {
         self.file_data.extend_from_slice(file_data);
 
         let offset: u32 = offset.try_into().expect("file data offset must fit in u32");
-        self.file_data_map.insert(file_data.to_vec(), offset);
+        self.insert_file_data(file_data, offset);
 
         offset
+    }
+
+    fn find_file_data(&self, file_data: &[u8]) -> Option<u32> {
+        match self.file_data_map {
+            FileDataSerializerImpl::NoDedup => None,
+            FileDataSerializerImpl::DedupWithVec(ref map) => map.get(file_data).copied(),
+            FileDataSerializerImpl::DedupWithHash(ref map) => {
+                let digest = sha2::Sha256::digest(file_data);
+                map.get(&digest).copied()
+            }
+        }
+    }
+
+    fn insert_file_data(&mut self, file_data: &[u8], offset: u32) {
+        match &mut self.file_data_map {
+            FileDataSerializerImpl::NoDedup => {}
+            FileDataSerializerImpl::DedupWithVec(map) => {
+                map.insert(file_data.to_vec(), offset);
+            }
+            FileDataSerializerImpl::DedupWithHash(map) => {
+                let digest = sha2::Sha256::digest(file_data);
+                map.insert(digest, offset);
+            }
+        }
     }
 }
 
@@ -4048,13 +4110,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_page_data_dedup() {
+    fn test_page_data_dedup(strategy: FileDataSerializerStrategy) {
         // test two page datas with same contents refer to the same file offset
         let gpa = 0x12 * PAGE_SIZE_4K;
         let file_data_offset = 0x12340;
         let data = vec![1, 2, 3, 4, 5, 4, 3, 2, 1];
-        let mut file_data = FileDataSerializer::new(file_data_offset);
+        let mut file_data = FileDataSerializer::new_with_strategy(file_data_offset, strategy);
 
         let header = IgvmDirectiveHeader::PageData {
             gpa,
@@ -4103,7 +4164,16 @@ mod tests {
         assert_eq!(first.file_offset, second.file_offset);
         assert_eq!(second.file_offset, third.file_offset);
         assert!(different.file_offset != first.file_offset);
-        assert_eq!(file_data.file_data_map.len(), 2);
+    }
+
+    #[test]
+    fn test_page_data_dedup_vec() {
+        test_page_data_dedup(FileDataSerializerStrategy::DedupWithVec);
+    }
+
+    #[test]
+    fn test_page_data_dedup_hash() {
+        test_page_data_dedup(FileDataSerializerStrategy::DedupWithHash);
     }
 
     #[test]
