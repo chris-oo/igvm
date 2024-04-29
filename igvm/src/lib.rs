@@ -2703,9 +2703,12 @@ impl IgvmFile {
         Ok(())
     }
 
-    /// Serialize this IGVM file into the binary format, into the supplied
-    /// output Vec.
-    pub fn serialize(&self, output: &mut Vec<u8>) -> Result<(), Error> {
+    /// Serialize this IGVM file into the binary format, into the supplied output Vec, with the specified file data deduplication strategy.
+    pub fn serialize_with_strategy(
+        &self,
+        strategy: FileDataSerializerStrategy,
+        output: &mut Vec<u8>,
+    ) -> Result<(), Error> {
         IgvmFile::validate_platform_headers(self.revision, self.platform_headers.iter())?;
 
         // Build the variable header and file data section by looping through each header type.
@@ -2753,7 +2756,8 @@ impl IgvmFile {
         }
 
         // dedup file data
-        let mut file_data = FileDataSerializer::new(file_data_section_start);
+        let mut file_data =
+            FileDataSerializer::new_with_strategy(file_data_section_start, strategy);
 
         // Add directive headers
         for header in &self.directive_headers {
@@ -2819,6 +2823,12 @@ impl IgvmFile {
         output.append(&mut file_data);
 
         Ok(())
+    }
+
+    /// Serialize this IGVM file into the binary format, into the supplied
+    /// output Vec.
+    pub fn serialize(&self, output: &mut Vec<u8>) -> Result<(), Error> {
+        self.serialize_with_strategy(FileDataSerializerStrategy::NoDedup, output)
     }
 
     /// Create a new [`IgvmFile`] from the given headers.
@@ -3512,6 +3522,21 @@ mod tests {
         // TODO: test individual or extend existing individual tests to match.
         //       pending refactor though for bad get_* methods to take mut vector instead
 
+        fn test_deserialize_with_strategy(strategy: FileDataSerializerStrategy, file: &IgvmFile) {
+            let mut binary_file = Vec::new();
+            file.serialize_with_strategy(strategy, &mut binary_file)
+                .unwrap();
+
+            let deserialized_binary_file = IgvmFile::new_from_binary(&binary_file, None).unwrap();
+            assert_igvm_equal(file, &deserialized_binary_file);
+        }
+
+        fn test_deserialize_all(file: &IgvmFile) {
+            test_deserialize_with_strategy(FileDataSerializerStrategy::NoDedup, file);
+            test_deserialize_with_strategy(FileDataSerializerStrategy::DedupWithVec, file);
+            test_deserialize_with_strategy(FileDataSerializerStrategy::DedupWithHash, file)
+        }
+
         // test basic
         #[test]
         fn test_basic() {
@@ -3537,11 +3562,7 @@ mod tests {
                     new_parameter_insert(20, 0, 1),
                 ],
             };
-            let mut binary_file = Vec::new();
-            file.serialize(&mut binary_file).unwrap();
-
-            let deserialized_binary_file = IgvmFile::new_from_binary(&binary_file, None).unwrap();
-            assert_igvm_equal(&file, &deserialized_binary_file);
+            test_deserialize_all(&file);
         }
 
         #[test]
@@ -3576,11 +3597,7 @@ mod tests {
                     },
                 ],
             };
-            let mut binary_file = Vec::new();
-            file.serialize(&mut binary_file).unwrap();
-
-            let deserialized_binary_file = IgvmFile::new_from_binary(&binary_file, None).unwrap();
-            assert_igvm_equal(&file, &deserialized_binary_file);
+            test_deserialize_all(&file);
         }
 
         #[test]
@@ -3615,11 +3632,7 @@ mod tests {
                     },
                 ],
             };
-            let mut binary_file = Vec::new();
-            file.serialize(&mut binary_file).unwrap();
-
-            let deserialized_binary_file = IgvmFile::new_from_binary(&binary_file, None).unwrap();
-            assert_igvm_equal(&file, &deserialized_binary_file);
+            test_deserialize_all(&file);
         }
 
         // test platform filter works correctly
