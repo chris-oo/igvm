@@ -3408,41 +3408,45 @@ impl IgvmFile {
         self.initialization_headers
             .append(&mut other.initialization_headers);
 
+        for other_header in other.directive_headers {
+            self.directive_headers.push(other_header);
+        }
+
         // Merge or append each directive header, searching starting from the
         // back.
-        let mut insert_index = 0;
-        'outer: for other_header in other.directive_headers {
-            // Limit the search space to the earliest possible insertion point
-            // that would not break relative ordering.
-            for (index, header) in self.directive_headers[insert_index..]
-                .iter_mut()
-                .enumerate()
-                .rev()
-            {
-                if header.equivalent(&other_header) {
-                    match (
-                        header.compatibility_mask_mut(),
-                        other_header.compatibility_mask(),
-                    ) {
-                        (Some(header_mask), Some(other_header_mask)) => {
-                            debug_assert!(*header_mask & other_header_mask == 0);
-                            *header_mask |= other_header_mask
-                        }
-                        (None, None) => {}
-                        _ => unreachable!(),
-                    }
-                    // Search now ends after this merged header. Since we
-                    // limited the slice earlier, we add the index + 1 to the
-                    // overall starting point.
-                    insert_index += index + 1;
-                    continue 'outer;
-                }
-            }
-            // Unable to merge the header into an existing header, append at the
-            // specified index and update the end of search index.
-            self.directive_headers.insert(insert_index, other_header);
-            insert_index += 1;
-        }
+        // let mut insert_index = 0;
+        // 'outer: for other_header in other.directive_headers {
+        //     // Limit the search space to the earliest possible insertion point
+        //     // that would not break relative ordering.
+        //     for (index, header) in self.directive_headers[insert_index..]
+        //         .iter_mut()
+        //         .enumerate()
+        //         .rev()
+        //     {
+        //         if header.equivalent(&other_header) {
+        //             match (
+        //                 header.compatibility_mask_mut(),
+        //                 other_header.compatibility_mask(),
+        //             ) {
+        //                 (Some(header_mask), Some(other_header_mask)) => {
+        //                     debug_assert!(*header_mask & other_header_mask == 0);
+        //                     *header_mask |= other_header_mask
+        //                 }
+        //                 (None, None) => {}
+        //                 _ => unreachable!(),
+        //             }
+        //             // Search now ends after this merged header. Since we
+        //             // limited the slice earlier, we add the index + 1 to the
+        //             // overall starting point.
+        //             insert_index += index + 1;
+        //             continue 'outer;
+        //         }
+        //     }
+        //     // Unable to merge the header into an existing header, append at the
+        //     // specified index and update the end of search index.
+        //     self.directive_headers.insert(insert_index, other_header);
+        //     insert_index += 1;
+        // }
 
         Ok(())
     }
