@@ -248,6 +248,8 @@ pub enum IgvmVariableHeaderType {
     /// A page table relocation region described by
     /// [`IGVM_VHS_PAGE_TABLE_RELOCATION`].
     IGVM_VHT_PAGE_TABLE_RELOCATION_REGION = 0x103,
+    /// A TDX policy structure described by [`IGVM_VHS_TDX_POLICY`].
+    IGVM_VHT_TDX_POLICY = 0x104,
 
     // These are IGVM_VHT_RANGE_DIRECTIVE structures.
     /// A parameter area structure described by [`IGVM_VHS_PARAMETER_AREA`].
@@ -443,6 +445,10 @@ pub struct IGVM_VHS_SUPPORTED_PLATFORM {
 
 /// This structure defines the guest policy that is isolation architecture
 /// dependent.
+///
+/// This header is maintained for backwards compatability with older IGVM files,
+/// but newer files should use the individual policy structure for each
+/// architecture.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct IGVM_VHS_GUEST_POLICY {
@@ -496,6 +502,45 @@ pub struct TdxPolicy {
     pub migratable: u8,
     #[bits(61)]
     pub reserved: u64,
+}
+
+/// The Intel TDX policy used to launch a guest. This corresponds to fields
+/// inside the `TDINFO_STRUCT` used when launching a TD, specified in the "Intel
+/// TDX Module ABI Specification" Section 3.9.7. This header supercedes
+/// [`IGVM_VHS_GUEST_POLICY`] and must not be specified in the same compatability
+/// mask for TDX.
+///
+/// For both the attributes and the XFAM field, a loader is expected to respect
+/// the requested bits that are required to be one or zero.
+///
+/// A required zero bit has a value of zero encoded, so a loader may validate
+/// that the bit is zero by performing `load_time_bits & required_zeroes == 0`.
+///
+/// A required one bit has a value of one encoded, so a loader may validate that
+/// the bit is one by performing `!load_time_bits & required_ones == 0`.
+///
+/// A bit that the IGVM file has no requirements about will have both the
+/// required zero bit set and required one bit clear.
+///
+/// TODO: naming, since we maybe want to name it TD_LAUNCH_INFO or something to
+/// differentiate it from the existing header?
+///
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct IGVM_VHS_TDX_POLICY {
+    /// Compatibility mask.
+    pub compatibility_mask: u32,
+    /// Reserved, must be zero.
+    pub reserved: u32,
+    /// Required zeroes for attributes for a TDX guest, specified in the "Intel
+    /// TDX Module ABI Specification" Section 3.4.1 Attributes.
+    pub attributes_required_zeroes: u64,
+    /// Required ones for attributes.
+    pub attributes_required_ones: u64,
+    /// Required zeroes for XFAM.
+    pub xfam_required_zeroes: u64,
+    /// Required ones for XFAM.
+    pub xfam_required_ones: u64,
 }
 
 /// This region describes VTL2.
