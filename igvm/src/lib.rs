@@ -322,6 +322,13 @@ pub enum IgvmInitializationHeader {
         policy: u64,
         compatibility_mask: u32,
     },
+    TdxPolicy {
+        compatibility_mask: u32,
+        attributes_required_zeroes: u64,
+        attributes_required_ones: u64,
+        xfam_required_zeroes: u64,
+        xfam_required_ones: u64,
+    },
     RelocatableRegion {
         compatibility_mask: u32,
         relocation_alignment: u64,
@@ -351,6 +358,7 @@ impl IgvmInitializationHeader {
     fn header_size(&self) -> usize {
         let additional = match self {
             IgvmInitializationHeader::GuestPolicy { .. } => size_of::<IGVM_VHS_GUEST_POLICY>(),
+            IgvmInitializationHeader::TdxPolicy { .. } => size_of::<IGVM_VHS_TDX_POLICY>(),
             IgvmInitializationHeader::RelocatableRegion { .. } => {
                 size_of::<IGVM_VHS_RELOCATABLE_REGION>()
             }
@@ -370,6 +378,9 @@ impl IgvmInitializationHeader {
             IgvmInitializationHeader::GuestPolicy { .. } => {
                 IgvmVariableHeaderType::IGVM_VHT_GUEST_POLICY
             }
+            IgvmInitializationHeader::TdxPolicy { .. } => {
+                IgvmVariableHeaderType::IGVM_VHT_TDX_POLICY
+            }
             IgvmInitializationHeader::RelocatableRegion { .. } => {
                 IgvmVariableHeaderType::IGVM_VHT_RELOCATABLE_REGION
             }
@@ -381,12 +392,38 @@ impl IgvmInitializationHeader {
 
     /// Checks if this header contains valid state.
     fn validate(&self) -> Result<(), BinaryHeaderError> {
+        fn validate_tdx_policy_bit_requirements(
+            required_zeroes: u64,
+            required_ones: u64,
+        ) -> Result<(), BinaryHeaderError> {
+            if required_zeroes & required_ones != 0 {
+                return Err(BinaryHeaderError::InconsistentTdxPolicyBitRequirements);
+            }
+
+            Ok(())
+        }
+
         match self {
             IgvmInitializationHeader::GuestPolicy {
                 policy: _,
                 compatibility_mask: _,
             } => {
                 // TODO: check policy bits?
+                Ok(())
+            }
+            IgvmInitializationHeader::TdxPolicy {
+                compatibility_mask: _,
+                attributes_required_zeroes,
+                attributes_required_ones,
+                xfam_required_zeroes,
+                xfam_required_ones,
+            } => {
+                validate_tdx_policy_bit_requirements(
+                    *attributes_required_zeroes,
+                    *attributes_required_ones,
+                )?;
+                validate_tdx_policy_bit_requirements(*xfam_required_zeroes, *xfam_required_ones)?;
+
                 Ok(())
             }
             IgvmInitializationHeader::RelocatableRegion {
@@ -488,6 +525,30 @@ impl IgvmInitializationHeader {
                     compatibility_mask,
                 }
             }
+            IgvmVariableHeaderType::IGVM_VHT_TDX_POLICY
+                if length == size_of::<IGVM_VHS_TDX_POLICY>() =>
+            {
+                let IGVM_VHS_TDX_POLICY {
+                    compatibility_mask,
+                    reserved,
+                    attributes_required_zeroes,
+                    attributes_required_ones,
+                    xfam_required_zeroes,
+                    xfam_required_ones,
+                } = read_header(&mut variable_headers)?;
+
+                if reserved != 0 {
+                    return Err(BinaryHeaderError::ReservedNotZero);
+                }
+
+                IgvmInitializationHeader::TdxPolicy {
+                    compatibility_mask,
+                    attributes_required_zeroes,
+                    attributes_required_ones,
+                    xfam_required_zeroes,
+                    xfam_required_ones,
+                }
+            }
             IgvmVariableHeaderType::IGVM_VHT_RELOCATABLE_REGION
                 if length == size_of::<IGVM_VHS_RELOCATABLE_REGION>() =>
             {
@@ -566,6 +627,9 @@ impl IgvmInitializationHeader {
             GuestPolicy {
                 compatibility_mask, ..
             } => Some(*compatibility_mask),
+            TdxPolicy {
+                compatibility_mask, ..
+            } => Some(*compatibility_mask),
             RelocatableRegion {
                 compatibility_mask, ..
             } => Some(*compatibility_mask),
@@ -593,6 +657,28 @@ impl IgvmInitializationHeader {
                 append_header(
                     &info,
                     IgvmVariableHeaderType::IGVM_VHT_GUEST_POLICY,
+                    variable_headers,
+                );
+            }
+            IgvmInitializationHeader::TdxPolicy {
+                compatibility_mask,
+                attributes_required_zeroes,
+                attributes_required_ones,
+                xfam_required_zeroes,
+                xfam_required_ones,
+            } => {
+                let info = IGVM_VHS_TDX_POLICY {
+                    compatibility_mask: *compatibility_mask,
+                    reserved: 0,
+                    attributes_required_zeroes: *attributes_required_zeroes,
+                    attributes_required_ones: *attributes_required_ones,
+                    xfam_required_zeroes: *xfam_required_zeroes,
+                    xfam_required_ones: *xfam_required_ones,
+                };
+
+                append_header(
+                    &info,
+                    IgvmVariableHeaderType::IGVM_VHT_TDX_POLICY,
                     variable_headers,
                 );
             }
@@ -923,6 +1009,8 @@ pub enum BinaryHeaderError {
     InvalidContext,
     #[error("invalid compatibility mask")]
     InvalidCompatibilityMask,
+    #[error("TDX policy required zeroes and ones overlap")]
+    InconsistentTdxPolicyBitRequirements,
     #[error("invalid vtl")]
     InvalidVtl,
     #[error("invalid platform type")]
@@ -2095,6 +2183,10 @@ pub enum Error {
     MultiplePageTableRelocationHeaders,
     #[error("relocation regions overlap")]
     RelocationRegionsOverlap,
+    #[error("guest policy and TDX policy overlap on a compatibility mask")]
+    GuestPolicyAndTdxPolicyOverlap,
+    #[error("TDX policy compatibility mask 0x{0:x} does not reference a TDX platform")]
+    InvalidTdxPolicyCompatibilityMask(u32),
     #[error("parameter insert inside page table region")]
     ParameterInsertInsidePageTableRegion,
     #[error("no matching vp context for vp index and vtl")]
@@ -2397,12 +2489,23 @@ impl IgvmFile {
     /// Returns additional info used to validate directive headers.
     fn validate_initialization_headers(
         revision: IgvmRevision,
+        platform_headers: &[IgvmPlatformHeader],
         initialization_headers: &[IgvmInitializationHeader],
     ) -> Result<DirectiveHeaderValidationInfo, Error> {
         let mut page_table_masks = 0;
+        let mut guest_policy_masks = 0;
+        let mut tdx_policy_masks = 0;
         let mut used_vp_idents: Vec<VpIdentifier> = Vec::new();
         let mut reloc_regions: HashMap<u32, RangeMap<u64, ()>> = HashMap::new();
         let mut page_table_regions = Vec::new();
+        let platform_mask_map: HashMap<u32, IgvmPlatformType> = platform_headers
+            .iter()
+            .map(|header| match header {
+                IgvmPlatformHeader::SupportedPlatform(info) => {
+                    (info.compatibility_mask, info.platform_type)
+                }
+            })
+            .collect();
 
         let mut check_region_overlap =
             |compatibility_mask: u32, start: u64, size: u64| -> Result<(), Error> {
@@ -2437,6 +2540,37 @@ impl IgvmFile {
             //  - Keep track of which page table regions, vp_index, and vtls for
             //    use in validating directive headers.
             match header {
+                IgvmInitializationHeader::GuestPolicy {
+                    compatibility_mask, ..
+                } => {
+                    if compatibility_mask & tdx_policy_masks != 0 {
+                        return Err(Error::GuestPolicyAndTdxPolicyOverlap);
+                    }
+
+                    guest_policy_masks |= compatibility_mask;
+                }
+                IgvmInitializationHeader::TdxPolicy {
+                    compatibility_mask, ..
+                } => {
+                    if !matches!(revision.arch(), Arch::X64) {
+                        return Err(Error::InvalidHeaderArch {
+                            arch: revision.arch(),
+                            header_type: "TdxPolicy".into(),
+                        });
+                    }
+
+                    for mask in extract_individual_masks(*compatibility_mask) {
+                        if platform_mask_map.get(&mask) != Some(&IgvmPlatformType::TDX) {
+                            return Err(Error::InvalidTdxPolicyCompatibilityMask(mask));
+                        }
+                    }
+
+                    if compatibility_mask & guest_policy_masks != 0 {
+                        return Err(Error::GuestPolicyAndTdxPolicyOverlap);
+                    }
+
+                    tdx_policy_masks |= compatibility_mask;
+                }
                 IgvmInitializationHeader::PageTableRelocationRegion {
                     compatibility_mask,
                     gpa,
@@ -2503,8 +2637,6 @@ impl IgvmFile {
                         vtl: *vtl,
                     })
                 }
-                // TODO: validate SNP policy compatibility mask specifies SNP
-                _ => {}
             }
         }
 
@@ -2789,8 +2921,11 @@ impl IgvmFile {
         }
 
         Self::validate_platform_headers(revision, platform_headers.iter())?;
-        let validation_info =
-            Self::validate_initialization_headers(revision, &initialization_headers)?;
+        let validation_info = Self::validate_initialization_headers(
+            revision,
+            &platform_headers,
+            &initialization_headers,
+        )?;
         Self::validate_directive_headers(revision, &directive_headers, validation_info)?;
 
         Ok(Self {
@@ -3165,11 +3300,15 @@ impl IgvmFile {
                 other.platform_headers.iter()
             )
             .is_ok());
-            let self_info =
-                Self::validate_initialization_headers(self.revision, &self.initialization_headers)
-                    .expect("valid file");
+            let self_info = Self::validate_initialization_headers(
+                self.revision,
+                &self.platform_headers,
+                &self.initialization_headers,
+            )
+            .expect("valid file");
             let other_info = Self::validate_initialization_headers(
                 other.revision,
+                &other.platform_headers,
                 &other.initialization_headers,
             )
             .expect("valid file");
@@ -3318,6 +3457,9 @@ impl IgvmFile {
                 IgvmInitializationHeader::GuestPolicy {
                     policy: _,
                     compatibility_mask,
+                } => fixup_mask(compatibility_mask),
+                IgvmInitializationHeader::TdxPolicy {
+                    compatibility_mask, ..
                 } => fixup_mask(compatibility_mask),
                 IgvmInitializationHeader::RelocatableRegion {
                     compatibility_mask, ..
@@ -4105,6 +4247,35 @@ mod tests {
         }
     }
 
+    fn test_initialization_header<T: IntoBytes + Immutable + KnownLayout>(
+        header: IgvmInitializationHeader,
+        header_type: IgvmVariableHeaderType,
+        expected_variable_binary_header: T,
+    ) {
+        let mut binary_header = Vec::new();
+
+        header.write_binary_header(&mut binary_header).unwrap();
+
+        let common_header = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&binary_header[..])
+            .expect("variable header must be present")
+            .0;
+
+        assert_eq!(common_header.typ, header_type);
+        assert_eq!(
+            align_8(common_header.length as usize),
+            size_of_val(&expected_variable_binary_header)
+        );
+        assert_eq!(
+            &binary_header[size_of_val(&common_header)..],
+            expected_variable_binary_header.as_bytes()
+        );
+
+        let (reserialized_header, remaining) =
+            IgvmInitializationHeader::new_from_binary_split(&binary_header).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(reserialized_header, header);
+    }
+
     // Test get binary header for each type.
     #[test]
     fn test_page_data() {
@@ -4356,6 +4527,132 @@ mod tests {
             Some(file_data),
             None,
         );
+    }
+
+    #[test]
+    fn test_tdx_policy_initialization_header() {
+        let raw_header = IGVM_VHS_TDX_POLICY {
+            compatibility_mask: 0x2,
+            reserved: 0,
+            attributes_required_zeroes: 0x40,
+            attributes_required_ones: 0x7,
+            xfam_required_zeroes: 0x100,
+            xfam_required_ones: 0x80,
+        };
+        let header = IgvmInitializationHeader::TdxPolicy {
+            compatibility_mask: raw_header.compatibility_mask,
+            attributes_required_zeroes: raw_header.attributes_required_zeroes,
+            attributes_required_ones: raw_header.attributes_required_ones,
+            xfam_required_zeroes: raw_header.xfam_required_zeroes,
+            xfam_required_ones: raw_header.xfam_required_ones,
+        };
+
+        test_initialization_header(
+            header,
+            IgvmVariableHeaderType::IGVM_VHT_TDX_POLICY,
+            raw_header,
+        );
+    }
+
+    #[test]
+    fn test_tdx_policy_reserved_must_be_zero() {
+        let mut binary_header = Vec::new();
+        let raw_header = IGVM_VHS_TDX_POLICY {
+            compatibility_mask: 0x2,
+            reserved: 1,
+            attributes_required_zeroes: 0,
+            attributes_required_ones: 0,
+            xfam_required_zeroes: 0,
+            xfam_required_ones: 0,
+        };
+
+        append_header(
+            &raw_header,
+            IgvmVariableHeaderType::IGVM_VHT_TDX_POLICY,
+            &mut binary_header,
+        );
+
+        assert!(matches!(
+            IgvmInitializationHeader::new_from_binary_split(&binary_header),
+            Err(BinaryHeaderError::ReservedNotZero)
+        ));
+    }
+
+    #[test]
+    fn test_tdx_policy_attribute_requirements_must_be_consistent() {
+        let header = IgvmInitializationHeader::TdxPolicy {
+            compatibility_mask: 0x2,
+            attributes_required_zeroes: 0b10,
+            attributes_required_ones: 0b10,
+            xfam_required_zeroes: 0,
+            xfam_required_ones: 0,
+        };
+
+        assert!(matches!(
+            header.write_binary_header(&mut Vec::new()),
+            Err(BinaryHeaderError::InconsistentTdxPolicyBitRequirements)
+        ));
+    }
+
+    #[test]
+    fn test_tdx_policy_xfam_requirements_must_be_consistent() {
+        let header = IgvmInitializationHeader::TdxPolicy {
+            compatibility_mask: 0x2,
+            attributes_required_zeroes: 0,
+            attributes_required_ones: 0,
+            xfam_required_zeroes: 0b100,
+            xfam_required_ones: 0b100,
+        };
+
+        assert!(matches!(
+            header.write_binary_header(&mut Vec::new()),
+            Err(BinaryHeaderError::InconsistentTdxPolicyBitRequirements)
+        ));
+    }
+
+    #[test]
+    fn test_tdx_policy_requires_tdx_platform() {
+        let file = IgvmFile::new(
+            IgvmRevision::V1,
+            vec![new_platform(0x1, IgvmPlatformType::SEV_SNP)],
+            vec![IgvmInitializationHeader::TdxPolicy {
+                compatibility_mask: 0x1,
+                attributes_required_zeroes: 0,
+                attributes_required_ones: 0,
+                xfam_required_zeroes: 0,
+                xfam_required_ones: 0,
+            }],
+            vec![],
+        );
+
+        assert!(matches!(
+            file,
+            Err(Error::InvalidTdxPolicyCompatibilityMask(0x1))
+        ));
+    }
+
+    #[test]
+    fn test_guest_policy_and_tdx_policy_must_not_overlap() {
+        let file = IgvmFile::new(
+            IgvmRevision::V1,
+            vec![new_platform(0x1, IgvmPlatformType::TDX)],
+            vec![
+                IgvmInitializationHeader::GuestPolicy {
+                    policy: 0,
+                    compatibility_mask: 0x1,
+                },
+                IgvmInitializationHeader::TdxPolicy {
+                    compatibility_mask: 0x1,
+                    attributes_required_zeroes: 0,
+                    attributes_required_ones: 0,
+                    xfam_required_zeroes: 0,
+                    xfam_required_ones: 0,
+                },
+            ],
+            vec![],
+        );
+
+        assert!(matches!(file, Err(Error::GuestPolicyAndTdxPolicyOverlap)));
     }
 
     #[test]

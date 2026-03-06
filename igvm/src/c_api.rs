@@ -60,6 +60,8 @@ pub enum IgvmResult {
     IGVMAPI_UNSUPPORTED_PAGE_SIZE = -25,
     IGVMAPI_INVALID_FIXED_HEADER_ARCH = -26,
     IGVMAPI_MERGE_REVISION = -27,
+    IGVMAPI_GUEST_POLICY_AND_TDX_POLICY_OVERLAP = -28,
+    IGVMAPI_INVALID_TDX_POLICY_COMPATIBILITY_MASK = -29,
 }
 
 type IgvmHandle = i32;
@@ -164,6 +166,12 @@ fn translate_error(error: Error) -> IgvmResult {
         Error::UnsupportedPageSize(_) => IgvmResult::IGVMAPI_UNSUPPORTED_PAGE_SIZE,
         Error::InvalidFixedHeaderArch(_) => IgvmResult::IGVMAPI_INVALID_FIXED_HEADER_ARCH,
         Error::MergeRevision => IgvmResult::IGVMAPI_MERGE_REVISION,
+        Error::GuestPolicyAndTdxPolicyOverlap => {
+            IgvmResult::IGVMAPI_GUEST_POLICY_AND_TDX_POLICY_OVERLAP
+        }
+        Error::InvalidTdxPolicyCompatibilityMask(_) => {
+            IgvmResult::IGVMAPI_INVALID_TDX_POLICY_COMPATIBILITY_MASK
+        }
     }
 }
 
@@ -523,6 +531,7 @@ mod tests {
     use igvm_defs::IGVM_VHS_PARAMETER_AREA;
     use igvm_defs::IGVM_VHS_PARAMETER_INSERT;
     use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
+    use igvm_defs::IGVM_VHS_TDX_POLICY;
     use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
     use igvm_defs::PAGE_SIZE_4K;
     use std::mem::size_of;
@@ -609,6 +618,26 @@ mod tests {
         binary_file
     }
 
+    fn create_tdx_igvm() -> Vec<u8> {
+        let page_data = vec![0xAA; PAGE_SIZE_4K as usize];
+        let file = IgvmFile::new(
+            IgvmRevision::V1,
+            vec![new_platform(0x1, IgvmPlatformType::TDX)],
+            vec![IgvmInitializationHeader::TdxPolicy {
+                compatibility_mask: 0x1,
+                attributes_required_zeroes: 0x10,
+                attributes_required_ones: 0x20,
+                xfam_required_zeroes: 0x40,
+                xfam_required_ones: 0x80,
+            }],
+            vec![new_page_data(0, 0x1, &page_data)],
+        )
+        .expect("Failed to create TDX file");
+        let mut binary_file = Vec::new();
+        file.serialize(&mut binary_file).unwrap();
+        binary_file
+    }
+
     #[test]
     fn c_api_parse_valid_file() {
         let file_data = create_igvm();
@@ -616,7 +645,7 @@ mod tests {
         // large as the specified length. We are passing a pointer to a vector along with
         // the length of the vector so the safety requirements are met.
         let igvm = unsafe { igvm_new_from_binary(file_data.as_ptr(), file_data.len() as u32) };
-        assert!(igvm > 0);
+        assert!(igvm > 0, "unexpected igvm handle/error code: {igvm}");
         igvm_free(igvm);
     }
 
@@ -733,6 +762,46 @@ mod tests {
             assert_eq!((*policy).policy, 0x30000);
             assert_eq!((*policy).compatibility_mask, 2);
             assert_eq!((*policy).reserved, 0);
+        }
+        igvm_free_buffer(igvm, data);
+
+        igvm_free(igvm);
+    }
+
+    #[test]
+    fn c_api_test_tdx_initialization_header() {
+        let file_data = create_tdx_igvm();
+        // SAFETY: The function call requires the size of the buffer to be at least as
+        // large as the specified length. We are passing a pointer to a vector along with
+        // the length of the vector so the safety requirements are met.
+        let igvm = unsafe { igvm_new_from_binary(file_data.as_ptr(), file_data.len() as u32) };
+        if igvm <= 0 {
+            panic!("unexpected igvm handle/error code: {igvm}");
+        }
+        assert_eq!(
+            igvm_header_count(igvm, IgvmHeaderSection::HEADER_SECTION_INITIALIZATION),
+            1
+        );
+
+        let data = igvm_get_header(igvm, IgvmHeaderSection::HEADER_SECTION_INITIALIZATION, 0);
+        assert!(data > 0);
+
+        // SAFETY: igvm_get_buffer returns a raw pointer that can only be used up until
+        // igvm_free_buffer() is called. This is satisfied by the code below. In addition, the
+        // returned pointer is safely cast to the required type only after checking the
+        // type reported in the header.
+        unsafe {
+            let header = igvm_get_buffer(igvm, data) as *const IGVM_VHS_VARIABLE_HEADER;
+            assert_eq!((*header).typ, IgvmVariableHeaderType::IGVM_VHT_TDX_POLICY);
+            assert_eq!((*header).length, size_of::<IGVM_VHS_TDX_POLICY>() as u32);
+
+            let policy = header.add(1) as *const IGVM_VHS_TDX_POLICY;
+            assert_eq!((*policy).compatibility_mask, 0x1);
+            assert_eq!((*policy).reserved, 0);
+            assert_eq!((*policy).attributes_required_zeroes, 0x10);
+            assert_eq!((*policy).attributes_required_ones, 0x20);
+            assert_eq!((*policy).xfam_required_zeroes, 0x40);
+            assert_eq!((*policy).xfam_required_ones, 0x80);
         }
         igvm_free_buffer(igvm, data);
 
