@@ -290,7 +290,7 @@ fn get_header(
                 .initialization_headers
                 .get(index as usize)
                 .ok_or(IgvmResult::IGVMAPI_INVALID_PARAMETER)?
-                .write_binary_header(&mut header_binary)
+                .write_binary_header(&mut header_binary, &mut FileDataSerializer::new(0))
                 .map_err(|_| IgvmResult::IGVMAPI_INVALID_FILE)?;
         }
         IgvmHeaderSection::HEADER_SECTION_DIRECTIVE => {
