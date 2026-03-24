@@ -1253,12 +1253,12 @@ pub enum VbsSigningAlgorithm {
 /// The CoRIM document must adhere to the following specifications for each
 /// platform:
 ///
-/// | Platform | Specification |
-/// |----------|---------------|
-/// | Intel TDX | TBD |
-/// | VBS | TBD |
-/// | AMD SEV-SNP | TBD |
-/// | ARM CCA | TBD |
+/// | Platform      | Specification |
+/// |---------------|---------------|
+/// | Intel TDX     | TBD           |
+/// | VBS           | TBD           |
+/// | AMD SEV-SNP   | TBD           |
+/// | ARM CCA       | TBD           |
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IGVM_VHS_CORIM_DOCUMENT {
