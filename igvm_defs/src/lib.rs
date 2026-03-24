@@ -1272,7 +1272,7 @@ pub struct IGVM_VHS_CORIM_DOCUMENT {
     pub reserved: u32,
 }
 
-/// This structure descibres a  COSE_Sign1 structure for a detached CoRIM CBOR
+/// This structure descibres a COSE_Sign1 structure for a detached CoRIM CBOR
 /// payload for a given platform. The payload measured by this CBOR is described
 /// the corresponding [`IGVM_VHS_CORIM_DOCUMENT`] structure, which must be
 /// defined before this structure.
