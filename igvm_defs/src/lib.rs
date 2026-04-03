@@ -541,6 +541,18 @@ pub struct IGVM_VHS_TDX_POLICY {
     pub xfam_required_zeroes: u64,
     /// Required ones for XFAM.
     pub xfam_required_ones: u64,
+    /// The MRConfigId to use for this TD. This is 48 bytes at the specified
+    /// file offset. If this value is zero, then the loader is free to specify
+    /// any value of its choosing.
+    pub mr_config_id_file_offset: u64,
+    /// The MROwner to use for this TD. This is 48 bytes at the specified
+    /// file offset. If this value is zero, then the loader is free to specify
+    /// any value of its choosing.
+    pub mr_owner_file_offset: u64,
+    /// The MROwnerConfig to use for this TD. This is 48 bytes at the specified
+    /// file offset. If this value is zero, then the loader is free to specify
+    /// any value of its choosing.
+    pub mr_owner_config_file_offset: u64,
 }
 
 /// This region describes VTL2.
