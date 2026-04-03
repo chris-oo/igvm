@@ -250,6 +250,8 @@ pub enum IgvmVariableHeaderType {
     IGVM_VHT_PAGE_TABLE_RELOCATION_REGION = 0x103,
     /// A TDX policy structure described by [`IGVM_VHS_TDX_POLICY`].
     IGVM_VHT_TDX_POLICY = 0x104,
+    /// Optional launch information described by [`IGVM_VHS_OPTIONAL_LAUNCH_INFO`].
+    IGVM_VHT_OPTIONAL_LAUNCH_INFO = 0x105,
 
     // These are IGVM_VHT_RANGE_DIRECTIVE structures.
     /// A parameter area structure described by [`IGVM_VHS_PARAMETER_AREA`].
@@ -541,18 +543,35 @@ pub struct IGVM_VHS_TDX_POLICY {
     pub xfam_required_zeroes: u64,
     /// Required ones for XFAM.
     pub xfam_required_ones: u64,
-    /// The MRConfigId to use for this TD. This is 48 bytes at the specified
-    /// file offset. If this value is zero, then the loader is free to specify
-    /// any value of its choosing.
-    pub mr_config_id_file_offset: u64,
-    /// The MROwner to use for this TD. This is 48 bytes at the specified
-    /// file offset. If this value is zero, then the loader is free to specify
-    /// any value of its choosing.
-    pub mr_owner_file_offset: u64,
-    /// The MROwnerConfig to use for this TD. This is 48 bytes at the specified
-    /// file offset. If this value is zero, then the loader is free to specify
-    /// any value of its choosing.
-    pub mr_owner_config_file_offset: u64,
+}
+
+#[open_enum]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum OptionalLaunchInfoType {
+    /// Corresponds to TDX MRConfigID. Only valid on TDX.
+    ConfigId = 0x0,
+    /// Corresponds to TDX MROwner. Only valid on TDX.
+    Owner = 0x1,
+    /// Corresponds to TDX MROwnerConfig. Only valid on TDX.
+    OwnerConfig = 0x2,
+    /// Corresponds to SNP HOST_DATA specified on SNP_LAUNCH_FINISH. Only valid
+    /// on SNP.
+    HostData = 0x3,
+}
+
+/// Describes additional optional launch information for a given type. A loader
+/// must set the requested fields if this header is present, but these fields
+/// are not required to be specified to launch a guest.
+///
+/// The data follows the header, with the size of the data described by the
+/// length field in the variable header [`IGVM_VHS_VARIABLE_HEADER`] minus the
+/// size of this header.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct IGVM_VHS_OPTIONAL_LAUNCH_INFO {
+    pub compatibility_mask: u32,
+    pub launch_info_type: OptionalLaunchInfoType,
 }
 
 /// This region describes VTL2.
