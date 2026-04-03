@@ -441,6 +441,64 @@ pub struct IGVM_VHS_SUPPORTED_PLATFORM {
     pub shared_gpa_boundary: u64,
 }
 
+/// v2 structure (name pending)
+/// support multiple hw plaftorms. cannot coexist with previous version
+/// requires IGVM format v3?
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct IGVM_VHS_SUPPORTED_PLATFORM_V2 {
+    /// A bitmask that is used in following variable header structures that
+    /// correspond with this platform. Headers that have this corresponding bit
+    /// set indicates that it should be loaded if loading this specified
+    /// platform.
+    ///
+    /// This must have only one bit set.
+    pub compatibility_mask: u32,
+    /// Which VTL will be the highest VTL activated for the guest. On platforms
+    /// that do not support multiple VTLs, this value must be zero.
+    pub highest_vtl: u8,
+    /// Which platform is supported, as defined by [`IgvmPlatformType`].
+    pub platform_type: IgvmPlatformType,
+    /// The platform version.
+    pub platform_version: u16,
+    /// This field describes the GPA at which memory above the boundary will be
+    /// host visible. A value of 0 indicates that this field is ignored, and the
+    /// platform described will manage shared memory in an enlightened manner.
+    pub shared_gpa_boundary: u64,
+    /// A field that describes bits supported by this platform.
+    /// TODO: naming
+    pub requirments: SupportedPlatformRequirements,
+}
+
+/// Requirements for a supported platform. This is used by the loader to
+/// determine what supported platform header to select, when there are multiple
+/// for a given platform type.
+///
+/// Each capability is described by two bits. A bit value of one encodes that
+/// capability should be disabled. It is invalid to specify both of a given
+/// capability as disabled, as there would be no legal configuration.
+///
+/// For example, a platform that wants to force debug to be disabled, would set
+/// `reject_debug_disabled` to 1, and `reject_debug_enabled` to 0. A platform
+/// that does not care about debug, would set both `reject_debug_disabled` and
+/// `reject_debug_enabled` to 0. A platform that wants to force debug to be
+/// enabled would set `reject_debug_disabled` to 0, and `reject_debug_enabled`
+/// to 1.
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct SupportedPlatformRequirements {
+    #[bits(1)]
+    pub reject_debug_disabled: u8,
+    #[bits(1)]
+    pub reject_debug_enabled: u8,
+    #[bits(1)]
+    pub reject_migration_disabled: u8,
+    #[bits(1)]
+    pub reject_migration_enabled: u8,
+    #[bits(60)]
+    pub reserved: u64,
+}
+
 /// This structure defines the guest policy that is isolation architecture
 /// dependent.
 #[repr(C)]
