@@ -1,0 +1,23 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "igvm_corim"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal CoRIM launch-endorsement generator for IGVM, tailored to the platform-agnostic design (Intel TDX, AMD SEV-SNP, Microsoft VBS)."
+license = "MIT"
+authors = ["Microsoft"]
+repository = "https://github.com/microsoft/igvm"
+keywords = ["virtualization", "attestation", "corim"]
+categories = ["virtualization"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+ciborium.workspace = true
+igvm_defs.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

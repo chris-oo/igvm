@@ -2255,6 +2255,9 @@ pub enum Error {
     InvalidFixedHeaderArch(u32),
     #[error("merged igvm files are not the same revision")]
     MergeRevision,
+    #[cfg(feature = "corim")]
+    #[error("CoRIM generation failed: {0}")]
+    CorimGeneration(String),
 }
 
 /// Architecture for an IGVM file.
@@ -2474,6 +2477,32 @@ impl FixedHeader {
             FixedHeader::V2(raw) => raw.checksum,
         }
     }
+}
+
+/// Pre-defined CoRIM templates for IGVM endorsements.
+///
+/// Each variant represents a fixed CoRIM structure with
+/// well-defined semantics. The caller supplies only the variable parameters
+/// (e.g., digest and SVN), and the template determines the full CBOR layout.
+///
+/// Used with [`IgvmFile::with_corim`].
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+#[derive(Debug, Clone)]
+pub enum CorimTemplate {
+    /// A launch endorsement template containing a launch measurement digest and SVN.
+    ///
+    /// Instantiates a CoRIM with:
+    /// - A **reference-values** triple for the launch measurement
+    /// - A **conditional-endorsement-series** triple mapping that digest
+    ///   to the SVN
+    LaunchEndorsement {
+        /// The raw launch measurement digest bytes.
+        /// Must match the platform's expected length (48 for SHA-384, 32 for SHA-256).
+        launch_digest: Vec<u8>,
+        /// The ISV security version number to endorse.
+        svn: u64,
+    },
 }
 
 impl IgvmFile {
@@ -3636,6 +3665,64 @@ impl IgvmFile {
     /// in self, and m is the number of headers in other.
     pub fn merge_simple(&mut self, other: IgvmFile) -> Result<(), Error> {
         self.merge_internal(other, false)
+    }
+
+    /// Attach a CoRIM endorsement to this IGVM file.
+    ///
+    /// Looks up the compatibility mask for the given platform type from the
+    /// file's platform headers, generates a CoRIM document from the template,
+    /// and embeds it as a CoRIM document initialization header
+    /// ([`IgvmInitializationHeader::CorimDocument`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `platform` — The target IGVM platform type. Must match one of the
+    ///   platform headers already in this file. Only
+    ///   [`IgvmPlatformType::SEV_SNP`], [`IgvmPlatformType::TDX`], and
+    ///   [`IgvmPlatformType::VSM_ISOLATION`] are supported for CoRIM generation.
+    /// * `template` — The CoRIM template to instantiate. Currently only
+    ///   [`CorimTemplate::LaunchEndorsement`] is supported.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CorimGeneration`] if the platform type is not found
+    /// in the file's platform headers, or if CoRIM generation fails (e.g.,
+    /// wrong digest length for the platform, or unsupported platform type).
+    #[cfg(feature = "corim")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+    pub fn with_corim(
+        &mut self,
+        platform: IgvmPlatformType,
+        template: CorimTemplate,
+    ) -> Result<(), Error> {
+        // Look up the compatibility mask from the platform headers.
+        let compatibility_mask = self
+            .platform_headers
+            .iter()
+            .find_map(|h| match h {
+                IgvmPlatformHeader::SupportedPlatform(info) if info.platform_type == platform => {
+                    Some(info.compatibility_mask)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                Error::CorimGeneration(format!("no platform header found for {platform:?}"))
+            })?;
+
+        let corim_bytes = match template {
+            CorimTemplate::LaunchEndorsement { launch_digest, svn } => {
+                igvm_corim::generate_launch_endorsement(platform, &launch_digest, svn)
+                    .map_err(|e| Error::CorimGeneration(e.to_string()))?
+            }
+        };
+
+        self.initialization_headers
+            .push(IgvmInitializationHeader::CorimDocument {
+                compatibility_mask,
+                document: corim_bytes,
+            });
+
+        Ok(())
     }
 }
 
