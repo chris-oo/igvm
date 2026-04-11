@@ -40,6 +40,24 @@ use zerocopy::KnownLayout;
 #[cfg(feature = "igvm-c")]
 pub mod c_api;
 
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub mod corim;
+
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub mod measurement;
+
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+mod serializer;
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub use serializer::IgvmPlatformMeasurement;
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub use serializer::IgvmSerializer;
+
 pub mod hv_defs;
 pub mod page_table;
 pub mod registers;
@@ -1802,7 +1820,7 @@ impl IgvmDirectiveHeader {
                     return Err(BinaryHeaderError::UnalignedAddress(*gpa));
                 }
 
-                if *number_of_bytes as u64 % PAGE_SIZE_4K != 0 {
+                if (*number_of_bytes as u64) % PAGE_SIZE_4K != 0 {
                     return Err(BinaryHeaderError::UnalignedSize(*number_of_bytes as u64));
                 }
             }
@@ -2279,6 +2297,19 @@ pub enum Error {
     InvalidFixedHeaderArch(u32),
     #[error("merged igvm files are not the same revision")]
     MergeRevision,
+    #[cfg(feature = "corim")]
+    #[error("CoRIM generation failed: {0}")]
+    CorimGeneration(String),
+    #[cfg(feature = "corim")]
+    #[error("measurement computation failed: {0}")]
+    MeasurementFailed(String),
+}
+
+#[cfg(feature = "corim")]
+impl From<crate::corim::launch_endorsement::Error> for Error {
+    fn from(e: crate::corim::launch_endorsement::Error) -> Self {
+        Error::CorimGeneration(e.to_string())
+    }
 }
 
 /// Architecture for an IGVM file.
@@ -2498,6 +2529,45 @@ impl FixedHeader {
             FixedHeader::V2(raw) => raw.checksum,
         }
     }
+}
+
+/// Pre-defined CoRIM templates for IGVM endorsements.
+///
+/// Each variant represents a fixed CoRIM structure with
+/// well-defined semantics. The caller supplies only the variable parameters,
+/// and the template determines the full CBOR layout.
+///
+/// Used with [`IgvmSerializer::add_corim`].
+///
+/// # Future extensibility
+///
+/// New CoRIM profiles (e.g., the Intel TDX profile) are added as new
+/// variants of this enum; [`IgvmSerializer::add_corim`] grows a new
+/// match arm to dispatch to the corresponding profile-specific builder.
+///
+/// This enum is intentionally the abstraction boundary instead of a
+/// `trait CorimProfile` -- when a second profile lands, we'll have
+/// concrete data to decide whether shared behavior justifies introducing
+/// a trait. Until then, two concrete profile types side-by-side keep the
+/// API surface small and avoid prematurely encoding launch-endorsement
+/// assumptions (single platform, single SVN, CES-only) into a generic
+/// shape.
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+#[derive(Debug, Clone)]
+pub enum CorimTemplate {
+    /// A CoRIM produced by the launch endorsement profile.
+    ///
+    /// Built via the two-stage
+    /// [`LaunchEndorsement`](crate::corim::launch_endorsement::LaunchEndorsement)
+    /// builder; finalize with
+    /// [`LaunchEndorsement::build`](crate::corim::launch_endorsement::LaunchEndorsement::build)
+    /// to obtain this variant.
+    LaunchEndorsement(crate::corim::launch_endorsement::LaunchEndorsement),
+    /// The architectural CoRIM template defined by vendors.
+    Architectural,
+    /// A custom CoRIM template with user-provided bytes.
+    Custom(Vec<u8>),
 }
 
 impl IgvmFile {
@@ -3236,6 +3306,12 @@ impl IgvmFile {
     /// Get the initialization headers in this file.
     pub fn initializations(&self) -> &[IgvmInitializationHeader] {
         self.initialization_headers.as_slice()
+    }
+
+    /// Get a mutable reference to the initialization headers in this file.
+    #[cfg(feature = "corim")]
+    pub(crate) fn initializations_mut(&mut self) -> &mut Vec<IgvmInitializationHeader> {
+        &mut self.initialization_headers
     }
 
     /// Get the directive headers in this file.

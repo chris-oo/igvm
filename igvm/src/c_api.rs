@@ -60,6 +60,10 @@ pub enum IgvmResult {
     IGVMAPI_UNSUPPORTED_PAGE_SIZE = -25,
     IGVMAPI_INVALID_FIXED_HEADER_ARCH = -26,
     IGVMAPI_MERGE_REVISION = -27,
+    #[cfg(feature = "corim")]
+    IGVMAPI_CORIM_GENERATION = -28,
+    #[cfg(feature = "corim")]
+    IGVMAPI_MEASUREMENT_FAILED = -29,
 }
 
 type IgvmHandle = i32;
@@ -164,6 +168,10 @@ fn translate_error(error: Error) -> IgvmResult {
         Error::UnsupportedPageSize(_) => IgvmResult::IGVMAPI_UNSUPPORTED_PAGE_SIZE,
         Error::InvalidFixedHeaderArch(_) => IgvmResult::IGVMAPI_INVALID_FIXED_HEADER_ARCH,
         Error::MergeRevision => IgvmResult::IGVMAPI_MERGE_REVISION,
+        #[cfg(feature = "corim")]
+        Error::CorimGeneration(_) => IgvmResult::IGVMAPI_CORIM_GENERATION,
+        #[cfg(feature = "corim")]
+        Error::MeasurementFailed(_) => IgvmResult::IGVMAPI_MEASUREMENT_FAILED,
     }
 }
 
