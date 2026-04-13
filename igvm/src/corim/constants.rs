@@ -2,7 +2,7 @@
 //
 // Copyright (c) Microsoft Corporation.
 
-//! Constants used by the IGVM launch endorsement CoRIM profile.
+//! Constants from RFCs used by the CoRIM implementation.
 //!
 //! CBOR tag numbers are from the IANA "CBOR Tags" registry as defined in
 //! draft-ietf-rats-corim-10 §12.2. CDDL map key numbers are from the
@@ -103,12 +103,3 @@ pub const MVAL_DIGESTS: i64 = 2;
 pub const NI_SHA256: i64 = 1;
 /// SHA-384 — Named Information hash algorithm ID (RFC 6920).
 pub const NI_SHA384: i64 = 7;
-
-// UUIDv5 namespace for tag-id derivation
-
-/// Fixed namespace UUID for deterministic CoMID tag-id derivation.
-///
-/// `tag-id = UUIDv5(TAG_ID_NAMESPACE, "{vendor}/{model}")`
-pub const TAG_ID_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-    0x85, 0xf3, 0xf1, 0xc2, 0x22, 0xa8, 0x44, 0x1e, 0xa1, 0xb9, 0xbc, 0xcf, 0xb6, 0x3e, 0xd5, 0xf7,
-]);

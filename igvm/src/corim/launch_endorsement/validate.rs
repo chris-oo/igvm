@@ -16,23 +16,23 @@
 
 use ciborium::Value;
 
-use crate::cbor::map_require_key;
-use crate::cbor::val_as_array;
-use crate::cbor::val_as_bytes;
-use crate::cbor::val_as_i64;
-use crate::cbor::val_as_map;
-use crate::cbor::val_as_text;
-use crate::cbor::val_as_u64;
-use crate::LaunchEndorsement;
-use crate::ValidationError;
+use crate::corim::cbor::map_require_key;
+use crate::corim::cbor::val_as_array;
+use crate::corim::cbor::val_as_bytes;
+use crate::corim::cbor::val_as_i64;
+use crate::corim::cbor::val_as_map;
+use crate::corim::cbor::val_as_text;
+use crate::corim::cbor::val_as_u64;
+use super::LaunchEndorsement;
+use super::ValidationError;
 
 // Field extractors (private)
 
 /// Extract (vendor, model) from an environment-map → class-map.
 fn extract_vendor_model(env: &Value) -> Result<(String, String), ValidationError> {
-    use crate::constants::CLASS_MODEL;
-    use crate::constants::CLASS_VENDOR;
-    use crate::constants::ENV_CLASS;
+    use crate::corim::constants::CLASS_MODEL;
+    use crate::corim::constants::CLASS_VENDOR;
+    use crate::corim::constants::ENV_CLASS;
 
     let env_entries = val_as_map(env, "environment-map")?;
     let class = map_require_key(env_entries, ENV_CLASS, "environment-map.class")?;
@@ -52,9 +52,9 @@ fn extract_vendor_model(env: &Value) -> Result<(String, String), ValidationError
 
 /// Extract (mkey, digest_alg, digest_bytes) from a measurement-map.
 fn extract_measurement_digest(meas: &Value) -> Result<(String, i64, Vec<u8>), ValidationError> {
-    use crate::constants::MEAS_KEY;
-    use crate::constants::MEAS_VAL;
-    use crate::constants::MVAL_DIGESTS;
+    use crate::corim::constants::MEAS_KEY;
+    use crate::corim::constants::MEAS_VAL;
+    use crate::corim::constants::MVAL_DIGESTS;
 
     let meas_entries = val_as_map(meas, "measurement-map")?;
     let mkey_val = map_require_key(meas_entries, MEAS_KEY, "measurement-map.mkey")?;
@@ -91,10 +91,10 @@ fn extract_measurement_digest(meas: &Value) -> Result<(String, i64, Vec<u8>), Va
 /// Strict mode: only `#6.552(uint)` is accepted. Plain uint and `#6.553`
 /// are rejected per the profile.
 fn extract_ces_svn(ces_triple: &Value) -> Result<u64, ValidationError> {
-    use crate::constants::MEAS_VAL;
-    use crate::constants::MVAL_SVN;
-    use crate::constants::TAG_MIN_SVN;
-    use crate::constants::TAG_SVN;
+    use crate::corim::constants::MEAS_VAL;
+    use crate::corim::constants::MVAL_SVN;
+    use crate::corim::constants::TAG_MIN_SVN;
+    use crate::corim::constants::TAG_SVN;
 
     let top = val_as_array(ces_triple, "ces-triple")?;
     if top.len() < 2 {
@@ -161,19 +161,19 @@ fn extract_ces_svn(ces_triple: &Value) -> Result<u64, ValidationError> {
 /// - CES triple contains an SVN tagged with `#6.552` (exact only)
 /// - Vendor/model maps to a known platform
 /// - Digest algorithm and length match the platform expectations
-pub fn validate_launch_endorsement(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
-    use crate::constants::COMID_TAG_IDENTITY;
-    use crate::constants::COMID_TRIPLES;
-    use crate::constants::CORIM_PROFILE;
-    use crate::constants::CORIM_TAGS;
-    use crate::constants::TAG_COMID;
-    use crate::constants::TAG_CORIM;
-    use crate::constants::TAG_IDENTITY_TAG_ID;
-    use crate::constants::TAG_ID_NAMESPACE;
-    use crate::constants::TRIPLES_COND_ENDORSEMENT_SERIES;
-    use crate::constants::TRIPLES_REFERENCE;
-    use crate::known_platforms;
-    use crate::profile::PROFILE_URI;
+pub fn validate(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
+    use crate::corim::constants::COMID_TAG_IDENTITY;
+    use crate::corim::constants::COMID_TRIPLES;
+    use crate::corim::constants::CORIM_PROFILE;
+    use crate::corim::constants::CORIM_TAGS;
+    use crate::corim::constants::TAG_COMID;
+    use crate::corim::constants::TAG_CORIM;
+    use crate::corim::constants::TAG_IDENTITY_TAG_ID;
+    use crate::corim::constants::TRIPLES_COND_ENDORSEMENT_SERIES;
+    use crate::corim::constants::TRIPLES_REFERENCE;
+    use super::TAG_ID_NAMESPACE;
+    use super::known_platforms;
+    use super::profile::PROFILE_URI;
     use uuid::Uuid;
 
     // Decode and unwrap tag 501
@@ -338,3 +338,182 @@ pub fn validate_launch_endorsement(bytes: &[u8]) -> Result<LaunchEndorsement, Va
         svn,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use ciborium::Value;
+    use igvm_defs::IgvmPlatformType;
+
+    use crate::corim::launch_endorsement;
+
+    /// Encode a `Value` to CBOR bytes (test helper).
+    fn encode(value: &Value) -> Vec<u8> {
+        crate::corim::cbor::encode(value).unwrap()
+    }
+
+    /// Shorthand: integer key.
+    fn k(key: i64) -> Value {
+        crate::corim::cbor::int_key(key)
+    }
+
+    /// Shorthand: build a CBOR map.
+    fn cbor_map(entries: Vec<(Value, Value)>) -> Value {
+        Value::Map(entries)
+    }
+
+    #[test]
+    fn snp_round_trip() {
+        let digest = vec![0xAA; 48];
+        let bytes = launch_endorsement::generate(IgvmPlatformType::SEV_SNP, &digest, 7).unwrap();
+
+        let e = launch_endorsement::validate(&bytes).unwrap();
+        assert_eq!(e.vendor, "AMD");
+        assert_eq!(e.model, "SEV-SNP");
+        assert_eq!(e.svn, 7);
+        assert_eq!(e.digest, digest);
+        assert_eq!(e.tag_id, "77e8061e-4634-5e53-a848-d1d09e996843");
+    }
+
+    #[test]
+    fn tdx_round_trip() {
+        let digest = vec![0xBB; 48];
+        let bytes = launch_endorsement::generate(IgvmPlatformType::TDX, &digest, 3).unwrap();
+
+        let e = launch_endorsement::validate(&bytes).unwrap();
+        assert_eq!(e.vendor, "Intel");
+        assert_eq!(e.model, "TDX");
+        assert_eq!(e.mkey, "MRTD");
+        assert_eq!(e.svn, 3);
+    }
+
+    #[test]
+    fn vbs_round_trip() {
+        let digest = vec![0xCC; 32];
+        let bytes =
+            launch_endorsement::generate(IgvmPlatformType::VSM_ISOLATION, &digest, 99).unwrap();
+
+        let e = launch_endorsement::validate(&bytes).unwrap();
+        assert_eq!(e.vendor, "Microsoft");
+        assert_eq!(e.model, "VBS");
+        assert_eq!(e.digest_alg, 1);
+        assert_eq!(e.svn, 99);
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        let err = launch_endorsement::validate(&[0xFF, 0x00]).unwrap_err();
+        assert!(err.to_string().contains("CBOR decode"));
+    }
+
+    #[test]
+    fn rejects_missing_tag_501() {
+        let plain = cbor_map(vec![(k(0), Value::Text("hello".into()))]);
+        let bytes = encode(&plain);
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
+        assert!(err.to_string().contains("missing CBOR tag 501"));
+    }
+
+    #[test]
+    fn rejects_no_comid() {
+        use crate::corim::constants::TAG_CORIM;
+        use crate::corim::launch_endorsement::profile::PROFILE_URI;
+
+        let corim_map = cbor_map(vec![
+            (k(0), Value::Text("test".into())),
+            (k(1), Value::Array(vec![])),
+            (k(3), Value::Text(PROFILE_URI.into())),
+        ]);
+        let tagged = Value::Tag(TAG_CORIM, Box::new(corim_map));
+        let bytes = encode(&tagged);
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
+        assert!(err.to_string().contains("no CoMID tag"));
+    }
+
+    #[test]
+    fn rejects_wrong_profile() {
+        let digest = vec![0xAA; 48];
+        let info = launch_endorsement::known_platforms()
+            .iter()
+            .find(|p| p.vendor == "AMD")
+            .unwrap();
+        let comid_bytes =
+            crate::corim::launch_endorsement::builder::build_comid(info, &digest, 1).unwrap();
+
+        use crate::corim::constants::CORIM_ID;
+        use crate::corim::constants::CORIM_PROFILE;
+        use crate::corim::constants::CORIM_TAGS;
+        use crate::corim::constants::TAG_COMID;
+        use crate::corim::constants::TAG_CORIM;
+
+        let tagged_comid = Value::Tag(TAG_COMID, Box::new(Value::Bytes(comid_bytes)));
+        let corim_map = cbor_map(vec![
+            (k(CORIM_ID), Value::Text("test".into())),
+            (k(CORIM_TAGS), Value::Array(vec![tagged_comid])),
+            (k(CORIM_PROFILE), Value::Text("tag:evil.com,2025:wrong".into())),
+        ]);
+        let tagged = Value::Tag(TAG_CORIM, Box::new(corim_map));
+        let bytes = encode(&tagged);
+
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
+        assert!(err.to_string().contains("profile mismatch"));
+    }
+
+    #[test]
+    fn rejects_missing_profile() {
+        let digest = vec![0xAA; 48];
+        let info = launch_endorsement::known_platforms()
+            .iter()
+            .find(|p| p.vendor == "AMD")
+            .unwrap();
+        let comid_bytes =
+            crate::corim::launch_endorsement::builder::build_comid(info, &digest, 1).unwrap();
+
+        use crate::corim::constants::TAG_COMID;
+        use crate::corim::constants::TAG_CORIM;
+
+        let tagged_comid = Value::Tag(TAG_COMID, Box::new(Value::Bytes(comid_bytes)));
+        let corim_map = cbor_map(vec![
+            (k(0), Value::Text("test".into())),
+            (k(1), Value::Array(vec![tagged_comid])),
+        ]);
+        let tagged = Value::Tag(TAG_CORIM, Box::new(corim_map));
+        let bytes = encode(&tagged);
+
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
+        assert!(err.to_string().contains("missing required profile"));
+    }
+
+    #[test]
+    fn rejects_wrong_digest_length() {
+        let info = launch_endorsement::known_platforms()
+            .iter()
+            .find(|p| p.vendor == "AMD")
+            .unwrap();
+        let comid_bytes =
+            crate::corim::launch_endorsement::builder::build_comid(info, &[0xAA; 32], 1).unwrap();
+        let corim_bytes =
+            crate::corim::launch_endorsement::builder::build_corim(info, comid_bytes).unwrap();
+
+        let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
+        assert!(err.to_string().contains("expected 48 bytes, got 32"));
+    }
+
+    #[test]
+    fn rejects_wrong_digest_alg() {
+        let info = crate::corim::launch_endorsement::PlatformInfo {
+            vendor: "AMD",
+            model: "SEV-SNP",
+            mkey: "MEASUREMENT",
+            digest_alg: 1, // wrong: AMD/SEV-SNP expects SHA-384 (alg 7)
+            digest_len: 48,
+        };
+        let comid_bytes =
+            crate::corim::launch_endorsement::builder::build_comid(&info, &[0xAA; 48], 1).unwrap();
+        let corim_bytes =
+            crate::corim::launch_endorsement::builder::build_corim(&info, comid_bytes).unwrap();
+
+        let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
+        assert!(err.to_string().contains("expected algorithm 7, got 1"));
+    }
+}
+

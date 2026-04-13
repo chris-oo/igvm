@@ -40,6 +40,10 @@ use zerocopy::KnownLayout;
 #[cfg(feature = "igvm-c")]
 pub mod c_api;
 
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub mod corim;
+
 pub mod hv_defs;
 pub mod page_table;
 pub mod registers;
@@ -3711,7 +3715,7 @@ impl IgvmFile {
 
         let corim_bytes = match template {
             CorimTemplate::LaunchEndorsement { launch_digest, svn } => {
-                igvm_corim::generate_launch_endorsement(platform, &launch_digest, svn)
+                crate::corim::launch_endorsement::generate(platform, &launch_digest, svn)
                     .map_err(|e| Error::CorimGeneration(e.to_string()))?
             }
         };

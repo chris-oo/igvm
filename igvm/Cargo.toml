@@ -38,15 +38,16 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 igvm_defs = { workspace = true, features = ["unstable"] }
-igvm_corim = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
+ciborium = { workspace = true, optional = true }
 range_map_vec.workspace = true
 crc32fast.workspace = true
 hex = { workspace = true, features = ["alloc"] }
 open-enum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+uuid = { workspace = true, optional = true }
 zerocopy = { workspace = true, features = ["alloc"] }
 static_assertions.workspace = true
 
@@ -54,4 +55,4 @@ static_assertions.workspace = true
 default = []
 capi = ["igvm-c"]
 igvm-c = [] # Add exports that allow the library to be used from C
-corim = ["dep:igvm_corim"] # CoRIM launch endorsement support
+corim = ["dep:ciborium", "dep:uuid"] # CoRIM launch endorsement support
