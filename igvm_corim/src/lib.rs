@@ -33,6 +33,7 @@ mod builder;
 mod cbor;
 pub(crate) mod constants;
 pub mod profile;
+mod signed;
 mod validate;
 
 pub use igvm_defs::IgvmPlatformType;
@@ -160,6 +161,39 @@ pub enum ValidationError {
     /// SVN field is missing or malformed.
     #[error("invalid SVN: {0}")]
     InvalidSvn(String),
+    /// COSE_Sign1 envelope is structurally invalid.
+    #[error("invalid COSE_Sign1 envelope")]
+    CoseSign1(#[from] CoseSign1Error),
+}
+
+/// Errors from COSE_Sign1 structural validation.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CoseSign1Error {
+    /// CBOR decoding of the COSE_Sign1 envelope failed.
+    #[error("CBOR decode failed")]
+    Decode(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// The outer value is not a COSE_Sign1 array or Tag(18).
+    #[error("expected COSE_Sign1 array or Tag(18)")]
+    NotCoseSign1,
+    /// The COSE_Sign1 array does not have exactly 4 elements.
+    #[error("COSE_Sign1 must have 4 elements, got {actual}")]
+    WrongArrayLength { actual: usize },
+    /// Element [0] (protected headers) is not a bstr.
+    #[error("element [0] (protected) must be a bstr")]
+    InvalidProtected,
+    /// Element [1] (unprotected headers) is not a map.
+    #[error("element [1] (unprotected) must be a map")]
+    InvalidUnprotected,
+    /// Element [2] (payload) is nil — this is a detached signature.
+    #[error("payload is nil (detached); use validate_launch_endorsement on the document directly")]
+    DetachedPayload,
+    /// Element [2] (payload) is not a bstr.
+    #[error("element [2] (payload) must be a bstr")]
+    InvalidPayload,
+    /// Element [3] (signature) is not a bstr.
+    #[error("element [3] (signature) must be a bstr")]
+    InvalidSignature,
 }
 
 // Shared public types
@@ -232,6 +266,17 @@ pub fn generate_launch_endorsement(
 /// full list of constraints checked.
 pub fn validate_launch_endorsement(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
     validate::validate_launch_endorsement(bytes)
+}
+
+/// Validate a signed CoRIM (COSE_Sign1) and extract the launch endorsement.
+///
+/// Parses the COSE_Sign1 envelope, extracts the embedded payload, and
+/// validates it as a launch endorsement. Cryptographic signature
+/// verification is **not** performed.
+///
+/// See [`signed::validate_signed_corim`] for details.
+pub fn validate_signed_corim(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
+    signed::validate_signed_corim(bytes)
 }
 
 // Tests
