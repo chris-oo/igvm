@@ -291,4 +291,15 @@ mod tests {
             other => panic!("expected tag 501, got: {other:?}"),
         }
     }
+
+    #[test]
+    fn unsupported_platform_rejected() {
+        use crate::corim::launch_endorsement::Error;
+
+        let err = generate(IgvmPlatformType::NATIVE, &[0xAA; 48], 1).unwrap_err();
+        assert!(
+            matches!(err, Error::UnsupportedPlatform(IgvmPlatformType::NATIVE)),
+            "got: {err:?}"
+        );
+    }
 }

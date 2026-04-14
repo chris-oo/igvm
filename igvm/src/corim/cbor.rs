@@ -67,7 +67,7 @@ pub(crate) fn val_as_map<'a>(
 }
 
 /// Look up integer key in a CBOR map entries list.
-pub(crate) fn map_get_key(entries: &[(Value, Value)], key: i64) -> Option<&Value> {
+fn map_get_key(entries: &[(Value, Value)], key: i64) -> Option<&Value> {
     for (k, v) in entries {
         if let Value::Integer(i) = k {
             if i128::from(*i) == key as i128 {

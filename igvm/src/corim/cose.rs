@@ -40,6 +40,9 @@ pub enum CoseSign1Error {
     /// Element [3] (signature) is not a bstr.
     #[error("element [3] (signature) must be a bstr")]
     InvalidSignature,
+    /// Element [3] (signature) is an empty bstr.
+    #[error("signature must not be empty")]
+    SignatureEmpty,
     /// Protected header content-type does not match expected value.
     #[error("protected header content-type mismatch: expected {expected:?}, got {actual:?}")]
     ContentTypeMismatch { expected: String, actual: String },
@@ -103,9 +106,11 @@ pub fn validate_corim_envelope(data: &[u8]) -> Result<(), CoseSign1Error> {
         _ => return Err(CoseSign1Error::InvalidPayload),
     }
 
-    // [3] signature — must be bstr
-    if !matches!(&elements[3], Value::Bytes(_)) {
-        return Err(CoseSign1Error::InvalidSignature);
+    // [3] signature — must be non-empty bstr
+    match &elements[3] {
+        Value::Bytes(b) if b.is_empty() => return Err(CoseSign1Error::SignatureEmpty),
+        Value::Bytes(_) => {}
+        _ => return Err(CoseSign1Error::InvalidSignature),
     }
 
     // Validate protected header content-type if present
@@ -255,6 +260,29 @@ mod tests {
     fn rejects_empty_input() {
         let err = super::validate_corim_envelope(&[]).unwrap_err();
         assert!(matches!(err, CoseSign1Error::Decode(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn rejects_empty_signature() {
+        use crate::corim::constants::TAG_COSE_SIGN1;
+
+        let cose = Value::Tag(
+            TAG_COSE_SIGN1,
+            Box::new(Value::Array(vec![
+                Value::Bytes(vec![]),
+                Value::Map(vec![]),
+                Value::Null,
+                Value::Bytes(vec![]),
+            ])),
+        );
+        let mut buf = Vec::new();
+        ciborium::into_writer(&cose, &mut buf).unwrap();
+
+        let err = super::validate_corim_envelope(&buf).unwrap_err();
+        assert!(
+            matches!(err, CoseSign1Error::SignatureEmpty),
+            "got: {err:?}"
+        );
     }
 
     #[test]

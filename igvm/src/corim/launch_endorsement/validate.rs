@@ -515,5 +515,26 @@ mod tests {
         let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
         assert!(err.to_string().contains("expected algorithm 7, got 1"));
     }
+
+    #[test]
+    fn rejects_unknown_platform() {
+        let info = crate::corim::launch_endorsement::PlatformInfo {
+            vendor: "Acme",
+            model: "FakeCPU",
+            mkey: "MEASUREMENT",
+            digest_alg: 7,
+            digest_len: 48,
+        };
+        let comid_bytes =
+            crate::corim::launch_endorsement::builder::build_comid(&info, &[0xAA; 48], 1).unwrap();
+        let corim_bytes =
+            crate::corim::launch_endorsement::builder::build_corim(&info, comid_bytes).unwrap();
+
+        let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown platform"),
+            "got: {err}"
+        );
+    }
 }
 
