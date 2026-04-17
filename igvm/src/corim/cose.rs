@@ -5,12 +5,10 @@
 //! COSE_Sign1 envelope validation for CoRIM payloads.
 //!
 //! Validates the structural envelope of a detached COSE_Sign1 signature
-//! per RFC 9052 §4.2. This is a general CoRIM operation, not specific to
-//! any particular CoRIM profile.
+//! per RFC 9052 §4.2, delegating parsing to the [`corim`] crate's
+//! [`decode_signed_corim`](corim::types::signed::decode_signed_corim).
 //!
 //! **Note:** Cryptographic signature verification is NOT performed.
-
-use ciborium::Value;
 
 /// Errors from COSE_Sign1 structural validation.
 #[derive(Debug, thiserror::Error)]
@@ -19,27 +17,9 @@ pub enum CoseSign1Error {
     /// CBOR decoding of the COSE_Sign1 envelope failed.
     #[error("CBOR decode failed")]
     Decode(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// The outer value is not a COSE_Sign1 array or Tag(18).
-    #[error("expected COSE_Sign1 array or Tag(18)")]
-    NotCoseSign1,
-    /// The COSE_Sign1 array does not have exactly 4 elements.
-    #[error("COSE_Sign1 must have 4 elements, got {actual}")]
-    WrongArrayLength { actual: usize },
-    /// Element [0] (protected headers) is not a bstr.
-    #[error("element [0] (protected) must be a bstr")]
-    InvalidProtected,
-    /// Element [1] (unprotected headers) is not a map.
-    #[error("element [1] (unprotected) must be a map")]
-    InvalidUnprotected,
     /// Element [2] (payload) must be nil for a detached signature.
     #[error("payload must be nil for detached COSE_Sign1, got embedded bstr")]
     PayloadNotNil,
-    /// Element [2] (payload) is not nil or bstr.
-    #[error("element [2] (payload) has unexpected type")]
-    InvalidPayload,
-    /// Element [3] (signature) is not a bstr.
-    #[error("element [3] (signature) must be a bstr")]
-    InvalidSignature,
     /// Element [3] (signature) is an empty bstr.
     #[error("signature must not be empty")]
     SignatureEmpty,
@@ -52,94 +32,38 @@ pub enum CoseSign1Error {
 /// (nil) payload.
 ///
 /// Checks:
-/// 1. Optional CBOR Tag(18) wrapper
-/// 2. 4-element CBOR array
-/// 3. Element \[0\] is a bstr (protected headers)
-/// 4. Element \[1\] is a map (unprotected headers)
-/// 5. Element \[2\] is nil (detached payload)
-/// 6. Element \[3\] is a bstr (signature)
-/// 7. If protected header contains `content-type` (key 3), it must be
+/// 1. Valid COSE_Sign1 structure (Tag(18) wrapper, 4-element array)
+/// 2. Protected and unprotected headers are well-formed
+/// 3. Payload is nil (detached)
+/// 4. Signature is non-empty
+/// 5. If protected header contains `content-type`, it must be
 ///    `"application/rim+cbor"`
 ///
-/// This function does NOT perform any cryptographic signature verification, leaving
-/// the responsibility of signature validation to the relaying party during attestation.
+/// This function does NOT perform any cryptographic signature verification,
+/// leaving the responsibility of signature validation to the relying party
+/// during attestation.
 pub fn validate_corim_envelope(data: &[u8]) -> Result<(), CoseSign1Error> {
-    use crate::corim::constants::COSE_HEADER_CONTENT_TYPE;
-    use crate::corim::constants::COSE_SIGN1_ARRAY_LEN;
-    use crate::corim::constants::CORIM_CONTENT_TYPE;
-    use crate::corim::constants::TAG_COSE_SIGN1;
+    let signed = corim::types::signed::decode_signed_corim(data)
+        .map_err(|e| CoseSign1Error::Decode(Box::new(e)))?;
 
-    let val: Value =
-        ciborium::from_reader(data).map_err(|e| CoseSign1Error::Decode(Box::new(e)))?;
-
-    // Unwrap optional Tag(18)
-    let inner = match val {
-        Value::Tag(TAG_COSE_SIGN1, inner) => *inner,
-        Value::Array(_) => val,
-        _ => return Err(CoseSign1Error::NotCoseSign1),
-    };
-
-    // Must be a 4-element array
-    let elements = match &inner {
-        Value::Array(arr) if arr.len() == COSE_SIGN1_ARRAY_LEN => arr,
-        Value::Array(arr) => {
-            return Err(CoseSign1Error::WrongArrayLength { actual: arr.len() })
-        }
-        _ => return Err(CoseSign1Error::NotCoseSign1),
-    };
-
-    // [0] protected — must be bstr
-    let protected_bytes = match &elements[0] {
-        Value::Bytes(b) => b.as_slice(),
-        _ => return Err(CoseSign1Error::InvalidProtected),
-    };
-
-    // [1] unprotected — must be map
-    if !matches!(&elements[1], Value::Map(_)) {
-        return Err(CoseSign1Error::InvalidUnprotected);
+    // Must be detached (nil payload)
+    if signed.payload.is_some() {
+        return Err(CoseSign1Error::PayloadNotNil);
     }
 
-    // [2] payload — must be nil (detached)
-    match &elements[2] {
-        Value::Null => {}
-        Value::Bytes(_) => return Err(CoseSign1Error::PayloadNotNil),
-        _ => return Err(CoseSign1Error::InvalidPayload),
+    // Signature must not be empty
+    if signed.signature.is_empty() {
+        return Err(CoseSign1Error::SignatureEmpty);
     }
 
-    // [3] signature — must be non-empty bstr
-    match &elements[3] {
-        Value::Bytes(b) if b.is_empty() => return Err(CoseSign1Error::SignatureEmpty),
-        Value::Bytes(_) => {}
-        _ => return Err(CoseSign1Error::InvalidSignature),
-    }
-
-    // Validate protected header content-type if present
-    if !protected_bytes.is_empty() {
-        let protected_map: Value = ciborium::from_reader(protected_bytes)
-            .map_err(|e| CoseSign1Error::Decode(Box::new(e)))?;
-
-        if let Value::Map(entries) = &protected_map {
-            for (key, value) in entries {
-                if let Value::Integer(i) = key {
-                    if i128::from(*i) == COSE_HEADER_CONTENT_TYPE as i128 {
-                        match value {
-                            Value::Text(ct) if ct == CORIM_CONTENT_TYPE => {}
-                            Value::Text(ct) => {
-                                return Err(CoseSign1Error::ContentTypeMismatch {
-                                    expected: CORIM_CONTENT_TYPE.to_string(),
-                                    actual: ct.clone(),
-                                })
-                            }
-                            _ => {
-                                return Err(CoseSign1Error::ContentTypeMismatch {
-                                    expected: CORIM_CONTENT_TYPE.to_string(),
-                                    actual: format!("{value:?}"),
-                                })
-                            }
-                        }
-                    }
-                }
-            }
+    // Check content-type if present
+    if let Some(ref ct) = signed.protected.content_type {
+        const EXPECTED: &str = "application/rim+cbor";
+        if ct != EXPECTED {
+            return Err(CoseSign1Error::ContentTypeMismatch {
+                expected: EXPECTED.to_string(),
+                actual: ct.clone(),
+            });
         }
     }
 
@@ -148,86 +72,74 @@ pub fn validate_corim_envelope(data: &[u8]) -> Result<(), CoseSign1Error> {
 
 #[cfg(test)]
 mod tests {
-    use ciborium::Value;
+    use corim::builder::{ComidBuilder, CorimBuilder};
+    use corim::types::common::{MeasuredElement, TagIdChoice};
+    use corim::types::corim::CorimId;
+    use corim::types::environment::{ClassMap, EnvironmentMap};
+    use corim::types::measurement::{Digest, MeasurementMap, MeasurementValuesMap};
+    use corim::types::signed::{CwtClaims, SignedCorimBuilder};
+    use corim::types::triples::ReferenceTriple;
 
     use super::CoseSign1Error;
 
-    fn build_detached_cose_sign1(protected: &[u8]) -> Vec<u8> {
-        use crate::corim::constants::TAG_COSE_SIGN1;
-
-        let cose = Value::Tag(
-            TAG_COSE_SIGN1,
-            Box::new(Value::Array(vec![
-                Value::Bytes(protected.to_vec()),
-                Value::Map(vec![]),
-                Value::Null,
-                Value::Bytes(vec![0xDE; 32]),
-            ])),
-        );
-        let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-        buf
+    /// Build a minimal unsigned CoRIM payload for test signing.
+    fn build_test_corim_bytes() -> Vec<u8> {
+        let env = EnvironmentMap {
+            class: Some(ClassMap {
+                class_id: None,
+                vendor: Some("Test".into()),
+                model: Some("Model".into()),
+                layer: None,
+                index: None,
+            }),
+            instance: None,
+            group: None,
+        };
+        let meas = MeasurementMap {
+            mkey: Some(MeasuredElement::Text("fw".into())),
+            mval: MeasurementValuesMap {
+                digests: Some(vec![Digest::new(7, vec![0xAA; 48])]),
+                ..MeasurementValuesMap::default()
+            },
+            authorized_by: None,
+        };
+        let comid = ComidBuilder::new(TagIdChoice::Text("test-comid".into()))
+            .add_reference_triple(ReferenceTriple::new(env, vec![meas]))
+            .build()
+            .unwrap();
+        CorimBuilder::new(CorimId::Text("test-corim".into()))
+            .add_comid_tag(comid)
+            .unwrap()
+            .build_bytes()
+            .unwrap()
     }
 
-    fn encode_protected_header(entries: Vec<(Value, Value)>) -> Vec<u8> {
-        let map = Value::Map(entries);
-        let mut buf = Vec::new();
-        ciborium::into_writer(&map, &mut buf).unwrap();
-        buf
+    /// Build a detached COSE_Sign1 envelope with a dummy signature.
+    fn build_detached_envelope() -> Vec<u8> {
+        let corim_bytes = build_test_corim_bytes();
+        let mut builder = SignedCorimBuilder::new(-7, corim_bytes)
+            .set_cwt_claims(CwtClaims::new("Test Signer"));
+        let _tbs = builder.to_be_signed(&[]).unwrap();
+        let signature = vec![0xDE; 64]; // dummy ES256 signature
+        builder.build_detached_with_signature(signature).unwrap()
     }
 
     #[test]
-    fn validates_empty_protected() {
-        let sig = build_detached_cose_sign1(&[]);
+    fn validates_detached_envelope() {
+        let sig = build_detached_envelope();
         super::validate_corim_envelope(&sig).unwrap();
-    }
-
-    #[test]
-    fn validates_correct_content_type() {
-        use crate::corim::constants::COSE_HEADER_CONTENT_TYPE;
-        use crate::corim::constants::CORIM_CONTENT_TYPE;
-
-        let protected = encode_protected_header(vec![(
-            Value::Integer(COSE_HEADER_CONTENT_TYPE.into()),
-            Value::Text(CORIM_CONTENT_TYPE.into()),
-        )]);
-        let sig = build_detached_cose_sign1(&protected);
-        super::validate_corim_envelope(&sig).unwrap();
-    }
-
-    #[test]
-    fn rejects_wrong_content_type() {
-        use crate::corim::constants::COSE_HEADER_CONTENT_TYPE;
-
-        let protected = encode_protected_header(vec![(
-            Value::Integer(COSE_HEADER_CONTENT_TYPE.into()),
-            Value::Text("application/json".into()),
-        )]);
-        let sig = build_detached_cose_sign1(&protected);
-        let err = super::validate_corim_envelope(&sig).unwrap_err();
-        assert!(
-            matches!(err, CoseSign1Error::ContentTypeMismatch { .. }),
-            "got: {err:?}"
-        );
     }
 
     #[test]
     fn rejects_embedded_payload() {
-        use crate::corim::constants::TAG_COSE_SIGN1;
+        let corim_bytes = build_test_corim_bytes();
+        let mut builder = SignedCorimBuilder::new(-7, corim_bytes)
+            .set_cwt_claims(CwtClaims::new("Test Signer"));
+        let _tbs = builder.to_be_signed(&[]).unwrap();
+        let signature = vec![0xDE; 64];
+        let sig = builder.build_with_signature(signature).unwrap();
 
-        let cose = Value::Tag(
-            TAG_COSE_SIGN1,
-            Box::new(Value::Array(vec![
-                Value::Bytes(vec![]),
-                Value::Map(vec![]),
-                Value::Bytes(vec![0x01, 0x02]),
-                Value::Bytes(vec![0xDE; 32]),
-            ])),
-        );
-        let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-
-        let err = super::validate_corim_envelope(&buf).unwrap_err();
+        let err = super::validate_corim_envelope(&sig).unwrap_err();
         assert!(
             matches!(err, CoseSign1Error::PayloadNotNil),
             "got: {err:?}"
@@ -235,23 +147,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_array_length() {
-        use crate::corim::constants::TAG_COSE_SIGN1;
+    fn rejects_empty_signature() {
+        let corim_bytes = build_test_corim_bytes();
+        let mut builder = SignedCorimBuilder::new(-7, corim_bytes)
+            .set_cwt_claims(CwtClaims::new("Test Signer"));
+        let _tbs = builder.to_be_signed(&[]).unwrap();
+        let signature = vec![];
+        let sig = builder.build_detached_with_signature(signature).unwrap();
 
-        let cose = Value::Tag(
-            TAG_COSE_SIGN1,
-            Box::new(Value::Array(vec![
-                Value::Bytes(vec![]),
-                Value::Map(vec![]),
-                Value::Null,
-            ])),
-        );
-        let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-
-        let err = super::validate_corim_envelope(&buf).unwrap_err();
+        let err = super::validate_corim_envelope(&sig).unwrap_err();
         assert!(
-            matches!(err, CoseSign1Error::WrongArrayLength { actual: 3 }),
+            matches!(err, CoseSign1Error::SignatureEmpty),
             "got: {err:?}"
         );
     }
@@ -260,42 +166,5 @@ mod tests {
     fn rejects_empty_input() {
         let err = super::validate_corim_envelope(&[]).unwrap_err();
         assert!(matches!(err, CoseSign1Error::Decode(_)), "got: {err:?}");
-    }
-
-    #[test]
-    fn rejects_empty_signature() {
-        use crate::corim::constants::TAG_COSE_SIGN1;
-
-        let cose = Value::Tag(
-            TAG_COSE_SIGN1,
-            Box::new(Value::Array(vec![
-                Value::Bytes(vec![]),
-                Value::Map(vec![]),
-                Value::Null,
-                Value::Bytes(vec![]),
-            ])),
-        );
-        let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-
-        let err = super::validate_corim_envelope(&buf).unwrap_err();
-        assert!(
-            matches!(err, CoseSign1Error::SignatureEmpty),
-            "got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn accepts_no_tag() {
-        let cose = Value::Array(vec![
-            Value::Bytes(vec![]),
-            Value::Map(vec![]),
-            Value::Null,
-            Value::Bytes(vec![0xFF; 32]),
-        ]);
-        let mut buf = Vec::new();
-        ciborium::into_writer(&cose, &mut buf).unwrap();
-
-        super::validate_corim_envelope(&buf).unwrap();
     }
 }

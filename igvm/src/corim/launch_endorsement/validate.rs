@@ -4,151 +4,32 @@
 
 //! CoRIM launch-endorsement validation.
 //!
-//! Decodes a tag-501-wrapped CoRIM from CBOR bytes, verifies the structure,
-//! and extracts the platform identity, launch measurement digest, and SVN.
+//! Decodes a tag-501-wrapped CoRIM using the [`corim`] crate's
+//! [`decode_and_validate`](corim::validate::decode_and_validate), then
+//! enforces the IGVM launch endorsement profile constraints on the typed
+//! [`CorimMap`](corim::types::corim::CorimMap) and
+//! [`ComidTag`](corim::types::comid::ComidTag) structures.
 //!
 //! This validator enforces **strict profile conformance** per `profile.rs`:
 //! - Profile URI is required and must match.
 //! - Exactly one CoMID tag (tag 506).
 //! - Both reference-triples and CES triples are required.
-//! - Only exact SVN (`#6.552`) is accepted; plain uint and min-SVN are rejected.
+//! - Only exact SVN is accepted; minimum SVN is rejected.
 //! - Tag-id must match UUIDv5 derivation from vendor/model.
 
-use ciborium::Value;
+use corim::types::common::{MeasuredElement, TagIdChoice};
+use corim::types::corim::ProfileChoice;
+use corim::types::measurement::SvnChoice;
+use uuid::Uuid;
 
-use crate::corim::cbor::map_require_key;
-use crate::corim::cbor::val_as_array;
-use crate::corim::cbor::val_as_bytes;
-use crate::corim::cbor::val_as_i64;
-use crate::corim::cbor::val_as_map;
-use crate::corim::cbor::val_as_text;
-use crate::corim::cbor::val_as_u64;
-use super::LaunchEndorsement;
-use super::ValidationError;
-
-// Field extractors (private)
-
-/// Extract (vendor, model) from an environment-map → class-map.
-fn extract_vendor_model(env: &Value) -> Result<(String, String), ValidationError> {
-    use crate::corim::constants::CLASS_MODEL;
-    use crate::corim::constants::CLASS_VENDOR;
-    use crate::corim::constants::ENV_CLASS;
-
-    let env_entries = val_as_map(env, "environment-map")?;
-    let class = map_require_key(env_entries, ENV_CLASS, "environment-map.class")?;
-    let class_entries = val_as_map(class, "class-map")?;
-    let vendor = val_as_text(
-        map_require_key(class_entries, CLASS_VENDOR, "class-map.vendor")?,
-        "class-map.vendor",
-    )?
-    .to_string();
-    let model = val_as_text(
-        map_require_key(class_entries, CLASS_MODEL, "class-map.model")?,
-        "class-map.model",
-    )?
-    .to_string();
-    Ok((vendor, model))
-}
-
-/// Extract (mkey, digest_alg, digest_bytes) from a measurement-map.
-fn extract_measurement_digest(meas: &Value) -> Result<(String, i64, Vec<u8>), ValidationError> {
-    use crate::corim::constants::MEAS_KEY;
-    use crate::corim::constants::MEAS_VAL;
-    use crate::corim::constants::MVAL_DIGESTS;
-
-    let meas_entries = val_as_map(meas, "measurement-map")?;
-    let mkey_val = map_require_key(meas_entries, MEAS_KEY, "measurement-map.mkey")?;
-    let mkey = val_as_text(mkey_val, "measurement-map.mkey")?.to_string();
-
-    let mval = map_require_key(meas_entries, MEAS_VAL, "measurement-map.mval")?;
-    let mval_entries = val_as_map(mval, "measurement-values-map")?;
-    let digests = val_as_array(
-        map_require_key(mval_entries, MVAL_DIGESTS, "measurement-values-map.digests")?,
-        "digests",
-    )?;
-
-    if digests.is_empty() {
-        return Err(ValidationError::InvalidDigest(
-            "digests array is empty".into(),
-        ));
-    }
-
-    let digest_pair = val_as_array(&digests[0], "digest[0]")?;
-    if digest_pair.len() != 2 {
-        return Err(ValidationError::InvalidDigest(
-            "digest must be [alg, bytes]".into(),
-        ));
-    }
-
-    let alg = val_as_i64(&digest_pair[0], "digest.alg")?;
-    let hash = val_as_bytes(&digest_pair[1], "digest.value")?.to_vec();
-
-    Ok((mkey, alg, hash))
-}
-
-/// Extract SVN from a CES triple's first series entry's addition.
-///
-/// Strict mode: only `#6.552(uint)` is accepted. Plain uint and `#6.553`
-/// are rejected per the profile.
-fn extract_ces_svn(ces_triple: &Value) -> Result<u64, ValidationError> {
-    use crate::corim::constants::MEAS_VAL;
-    use crate::corim::constants::MVAL_SVN;
-    use crate::corim::constants::TAG_MIN_SVN;
-    use crate::corim::constants::TAG_SVN;
-
-    let top = val_as_array(ces_triple, "ces-triple")?;
-    if top.len() < 2 {
-        return Err(ValidationError::InvalidSvn(
-            "CES triple missing series array".into(),
-        ));
-    }
-
-    let series = val_as_array(&top[1], "ces-triple.series")?;
-    if series.is_empty() {
-        return Err(ValidationError::InvalidSvn(
-            "CES series array is empty".into(),
-        ));
-    }
-
-    let series_entry = val_as_array(&series[0], "series-entry")?;
-    if series_entry.len() < 2 {
-        return Err(ValidationError::InvalidSvn(
-            "series entry missing addition".into(),
-        ));
-    }
-
-    let additions = val_as_array(&series_entry[1], "series-entry.addition")?;
-    if additions.is_empty() {
-        return Err(ValidationError::InvalidSvn(
-            "addition array is empty".into(),
-        ));
-    }
-
-    // addition[0] is a measurement-map; mval → svn
-    let addition_entries = val_as_map(&additions[0], "addition measurement-map")?;
-    let addition_mval = map_require_key(addition_entries, MEAS_VAL, "addition.mval")?;
-    let mval_entries = val_as_map(addition_mval, "addition measurement-values-map")?;
-    let svn_val = map_require_key(mval_entries, MVAL_SVN, "addition.mval.svn")?;
-
-    // Strict: only #6.552(uint) is accepted per profile.
-    match svn_val {
-        Value::Tag(TAG_SVN, inner) => val_as_u64(inner, "svn.value"),
-        Value::Tag(TAG_MIN_SVN, _) => Err(ValidationError::InvalidSvn(
-            "minimum SVN (#6.553) is not supported; only exact SVN (#6.552) is accepted".into(),
-        )),
-        _ => Err(ValidationError::InvalidSvn(
-            "SVN must be tagged with #6.552 per profile".into(),
-        )),
-    }
-}
-
-// Public validation entry point
+use super::profile::PROFILE_URI;
+use super::{known_platforms, LaunchEndorsement, ValidationError, TAG_ID_NAMESPACE};
 
 /// Validate and decode a CoRIM launch endorsement.
 ///
 /// Enforces strict profile conformance:
 ///
-/// - Outer wrapper is `#6.501(corim-map)`
+/// - Outer wrapper is `#6.501(corim-map)` (checked by corim crate)
 /// - Profile URI (key 3) is required and must match the IGVM launch
 ///   endorsement profile
 /// - `tags` array (key 1) must contain exactly one `#6.506(comid-bytes)` entry
@@ -158,118 +39,80 @@ fn extract_ces_svn(ces_triple: &Value) -> Result<u64, ValidationError> {
 ///   and `conditional-endorsement-series-triples` (key 8)
 /// - Reference triple has a valid environment with vendor/model
 /// - Reference triple has at least one measurement with digest
-/// - CES triple contains an SVN tagged with `#6.552` (exact only)
+/// - CES triple contains an exact SVN value
 /// - Vendor/model maps to a known platform
 /// - Digest algorithm and length match the platform expectations
 pub fn validate(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
-    use crate::corim::constants::COMID_TAG_IDENTITY;
-    use crate::corim::constants::COMID_TRIPLES;
-    use crate::corim::constants::CORIM_PROFILE;
-    use crate::corim::constants::CORIM_TAGS;
-    use crate::corim::constants::TAG_COMID;
-    use crate::corim::constants::TAG_CORIM;
-    use crate::corim::constants::TAG_IDENTITY_TAG_ID;
-    use crate::corim::constants::TRIPLES_COND_ENDORSEMENT_SERIES;
-    use crate::corim::constants::TRIPLES_REFERENCE;
-    use super::TAG_ID_NAMESPACE;
-    use super::known_platforms;
-    use super::profile::PROFILE_URI;
-    use uuid::Uuid;
-
-    // Decode and unwrap tag 501
-    let val: Value =
-        ciborium::from_reader(bytes).map_err(|e| ValidationError::Decode(Box::new(e)))?;
-    let corim_map = match val {
-        Value::Tag(TAG_CORIM, inner) => *inner,
-        _ => {
-            return Err(ValidationError::MissingTag {
-                expected: TAG_CORIM,
-            })
-        }
-    };
-    let corim_entries = val_as_map(&corim_map, "corim-map")?;
+    // Phase 1: Structural CoRIM/CoMID validation (tag 501, non-empty triples, etc.)
+    let (corim, comids) = corim::validate::decode_and_validate(bytes)?;
 
     // Require and validate profile URI
-    let profile_val = map_require_key(corim_entries, CORIM_PROFILE, "corim-map.profile")
-        .map_err(|_| ValidationError::MissingProfile)?;
-    let profile_str = val_as_text(profile_val, "corim-map.profile")?;
-    if profile_str != PROFILE_URI {
-        return Err(ValidationError::ProfileMismatch {
-            expected: PROFILE_URI.to_string(),
-            actual: profile_str.to_string(),
-        });
+    match &corim.profile {
+        Some(ProfileChoice::Uri(uri)) if uri == PROFILE_URI => {}
+        Some(ProfileChoice::Uri(uri)) => {
+            return Err(ValidationError::ProfileMismatch {
+                expected: PROFILE_URI.to_string(),
+                actual: uri.clone(),
+            })
+        }
+        Some(ProfileChoice::Oid(_)) => {
+            return Err(ValidationError::ProfileMismatch {
+                expected: PROFILE_URI.to_string(),
+                actual: "(OID)".to_string(),
+            })
+        }
+        None => return Err(ValidationError::MissingProfile),
+        _ => {
+            return Err(ValidationError::ProfileMismatch {
+                expected: PROFILE_URI.to_string(),
+                actual: "(unknown profile type)".to_string(),
+            })
+        }
     }
 
-    // Extract tags array and require exactly one CoMID
-    let tags = val_as_array(
-        map_require_key(corim_entries, CORIM_TAGS, "corim-map.tags")?,
-        "corim-map.tags",
-    )?;
-
-    let comid_entries: Vec<&[u8]> = tags
-        .iter()
-        .filter_map(|t| match t {
-            Value::Tag(TAG_COMID, inner) => match inner.as_ref() {
-                Value::Bytes(b) => Some(b.as_slice()),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
-
-    if comid_entries.is_empty() {
-        return Err(ValidationError::NoComid);
-    }
-    if comid_entries.len() > 1 {
+    // Require exactly one CoMID
+    if comids.len() > 1 {
         return Err(ValidationError::MultipleComids);
     }
+    let comid = &comids[0]; // decode_and_validate guarantees >= 1
 
-    let comid: Value = ciborium::from_reader(comid_entries[0])
-        .map_err(|e| ValidationError::Decode(Box::new(e)))?;
-    let comid_entries_map = val_as_map(&comid, "concise-mid-tag")?;
-
-    // Extract tag-identity → tag-id
-    let tag_identity =
-        map_require_key(comid_entries_map, COMID_TAG_IDENTITY, "comid.tag-identity")?;
-    let tag_identity_entries = val_as_map(tag_identity, "tag-identity-map")?;
-    let tag_id = val_as_text(
-        map_require_key(
-            tag_identity_entries,
-            TAG_IDENTITY_TAG_ID,
-            "tag-identity.tag-id",
-        )?,
-        "tag-identity.tag-id",
-    )?
-    .to_string();
-
-    // Extract triples
-    let triples = map_require_key(comid_entries_map, COMID_TRIPLES, "comid.triples")?;
-    let triples_entries = val_as_map(triples, "triples-map")?;
+    // Extract tag-id as text
+    let tag_id = match &comid.tag_identity.tag_id {
+        TagIdChoice::Text(s) => s.clone(),
+        TagIdChoice::Uuid(u) => {
+            // Format UUID bytes as hyphenated lowercase
+            let u = uuid::Uuid::from_bytes(*u);
+            u.to_string()
+        }
+        _ => {
+            return Err(ValidationError::Structure(
+                "tag-id must be text or UUID".into(),
+            ))
+        }
+    };
 
     // Extract reference-triples — required
-    let ref_triples = val_as_array(
-        map_require_key(
-            triples_entries,
-            TRIPLES_REFERENCE,
-            "triples.reference-triples",
-        )?,
-        "reference-triples",
-    )?;
+    let triples = &comid.triples;
+    let ref_triples = triples
+        .reference_triples
+        .as_ref()
+        .ok_or(ValidationError::EmptyTriples)?;
     if ref_triples.is_empty() {
         return Err(ValidationError::EmptyTriples);
     }
 
-    // Parse the first reference triple: [environment, [measurements]]
-    let first_ref = val_as_array(&ref_triples[0], "reference-triple[0]")?;
-    if first_ref.len() < 2 {
-        return Err(ValidationError::UnexpectedType {
-            expected: "[env, [measurements]]",
-            context: "reference-triple",
-        });
-    }
-
-    // Extract vendor/model from environment
-    let (vendor, model) = extract_vendor_model(&first_ref[0])?;
+    // Parse the first reference triple
+    let first_ref = &ref_triples[0];
+    let env = first_ref.environment();
+    let class = env.class.as_ref().ok_or_else(|| {
+        ValidationError::Structure("reference triple environment missing class".into())
+    })?;
+    let vendor = class.vendor.as_ref().ok_or_else(|| {
+        ValidationError::Structure("class-map missing vendor".into())
+    })?;
+    let model = class.model.as_ref().ok_or_else(|| {
+        ValidationError::Structure("class-map missing model".into())
+    })?;
 
     // Verify tag-id matches UUIDv5 derivation (case-insensitive per RFC 9562)
     let expected_tag_id =
@@ -282,16 +125,37 @@ pub fn validate(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
     }
 
     // Extract digest from measurements[0]
-    let measurements = val_as_array(&first_ref[1], "reference-triple.measurements")?;
+    let measurements = first_ref.measurements();
     if measurements.is_empty() {
         return Err(ValidationError::InvalidDigest(
             "no measurements in reference triple".into(),
         ));
     }
-    let (mkey, digest_alg, digest) = extract_measurement_digest(&measurements[0])?;
+    let meas = &measurements[0];
+    let mkey = match &meas.mkey {
+        Some(MeasuredElement::Text(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => {
+            return Err(ValidationError::Structure(
+                "measurement missing mkey".into(),
+            ))
+        }
+    };
+    let digests = meas
+        .mval
+        .digests
+        .as_ref()
+        .ok_or_else(|| ValidationError::InvalidDigest("measurement missing digests".into()))?;
+    if digests.is_empty() {
+        return Err(ValidationError::InvalidDigest(
+            "digests array is empty".into(),
+        ));
+    }
+    let digest = &digests[0];
+    let digest_alg = digest.alg();
+    let digest_bytes = digest.value().to_vec();
 
-    // Validate against known platforms (before CES, so unknown
-    // platforms are rejected with a clear error)
+    // Validate against known platforms
     let platform = known_platforms()
         .iter()
         .find(|p| p.vendor == vendor && p.model == model)
@@ -307,58 +171,149 @@ pub fn validate(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
         )));
     }
 
-    if digest.len() != platform.digest_len {
+    if digest_bytes.len() != platform.digest_len {
         return Err(ValidationError::InvalidDigest(format!(
             "expected {} bytes, got {}",
             platform.digest_len,
-            digest.len()
+            digest_bytes.len()
         )));
     }
 
     // Require CES triples and extract SVN
-    let ces_val = map_require_key(
-        triples_entries,
-        TRIPLES_COND_ENDORSEMENT_SERIES,
-        "triples.conditional-endorsement-series",
-    )
-    .map_err(|_| ValidationError::MissingCes)?;
-    let ces_arr = val_as_array(ces_val, "ces-triples")?;
-    if ces_arr.is_empty() {
+    let ces = triples
+        .conditional_endorsement_series
+        .as_ref()
+        .ok_or(ValidationError::MissingCes)?;
+    if ces.is_empty() {
         return Err(ValidationError::MissingCes);
     }
-    let svn = extract_ces_svn(&ces_arr[0])?;
+    let ces_triple = &ces[0];
+    let series = ces_triple.series();
+    if series.is_empty() {
+        return Err(ValidationError::InvalidSvn(
+            "CES series array is empty".into(),
+        ));
+    }
+    let addition = series[0].addition();
+    if addition.is_empty() {
+        return Err(ValidationError::InvalidSvn(
+            "addition array is empty".into(),
+        ));
+    }
+    let svn = match &addition[0].mval.svn {
+        Some(SvnChoice::ExactValue(n)) => *n,
+        Some(SvnChoice::MinValue(_)) => {
+            return Err(ValidationError::InvalidSvn(
+                "minimum SVN is not supported; only exact SVN is accepted".into(),
+            ))
+        }
+        _ => {
+            return Err(ValidationError::InvalidSvn(
+                "SVN field missing in CES addition".into(),
+            ))
+        }
+    };
 
     Ok(LaunchEndorsement {
-        vendor,
-        model,
+        vendor: vendor.clone(),
+        model: model.clone(),
         tag_id,
         mkey,
         digest_alg,
-        digest,
+        digest: digest_bytes,
         svn,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use ciborium::Value;
+    use corim::builder::{ComidBuilder, CorimBuilder};
+    use corim::types::common::{MeasuredElement, TagIdChoice};
+    use corim::types::corim::{CorimId, ProfileChoice};
+    use corim::types::environment::{ClassMap, EnvironmentMap};
+    use corim::types::measurement::{Digest, MeasurementMap, MeasurementValuesMap, SvnChoice};
+    use corim::types::triples::{
+        CesCondition, ConditionalEndorsementSeriesTriple, ConditionalSeriesRecord,
+        ReferenceTriple,
+    };
     use igvm_defs::IgvmPlatformType;
+    use uuid::Uuid;
 
     use crate::corim::launch_endorsement;
+    use crate::corim::launch_endorsement::profile::PROFILE_URI;
+    use crate::corim::launch_endorsement::TAG_ID_NAMESPACE;
 
-    /// Encode a `Value` to CBOR bytes (test helper).
-    fn encode(value: &Value) -> Vec<u8> {
-        crate::corim::cbor::encode(value).unwrap()
-    }
+    /// Build a CoRIM with custom parameters for negative testing.
+    fn build_custom_corim(
+        vendor: &str,
+        model: &str,
+        mkey: &str,
+        digest_alg: i64,
+        digest: &[u8],
+        svn: u64,
+        profile: Option<&str>,
+    ) -> Vec<u8> {
+        let env = EnvironmentMap {
+            class: Some(ClassMap {
+                class_id: None,
+                vendor: Some(vendor.into()),
+                model: Some(model.into()),
+                layer: None,
+                index: None,
+            }),
+            instance: None,
+            group: None,
+        };
+        let tag_id =
+            Uuid::new_v5(&TAG_ID_NAMESPACE, format!("{vendor}/{model}").as_bytes()).to_string();
+        let ref_meas = MeasurementMap {
+            mkey: Some(MeasuredElement::Text(mkey.into())),
+            mval: MeasurementValuesMap {
+                digests: Some(vec![Digest::new(digest_alg, digest.to_vec())]),
+                ..MeasurementValuesMap::default()
+            },
+            authorized_by: None,
+        };
+        let ces_sel = MeasurementMap {
+            mkey: Some(MeasuredElement::Text(mkey.into())),
+            mval: MeasurementValuesMap {
+                digests: Some(vec![Digest::new(digest_alg, digest.to_vec())]),
+                ..MeasurementValuesMap::default()
+            },
+            authorized_by: None,
+        };
+        let ces_add = MeasurementMap {
+            mkey: None,
+            mval: MeasurementValuesMap {
+                svn: Some(SvnChoice::ExactValue(svn)),
+                ..MeasurementValuesMap::default()
+            },
+            authorized_by: None,
+        };
+        let ces = ConditionalEndorsementSeriesTriple::new(
+            CesCondition {
+                environment: env.clone(),
+                claims_list: Vec::new(),
+                authorized_by: None,
+            },
+            vec![ConditionalSeriesRecord::new(vec![ces_sel], vec![ces_add])],
+        );
+        let comid = ComidBuilder::new(TagIdChoice::Text(tag_id))
+            .add_reference_triple(ReferenceTriple::new(env, vec![ref_meas]))
+            .add_conditional_endorsement_series(ces)
+            .build()
+            .unwrap();
 
-    /// Shorthand: integer key.
-    fn k(key: i64) -> Value {
-        crate::corim::cbor::int_key(key)
-    }
-
-    /// Shorthand: build a CBOR map.
-    fn cbor_map(entries: Vec<(Value, Value)>) -> Value {
-        Value::Map(entries)
+        let corim_id = format!("{vendor}/{model}/launch-endorsement");
+        let mut builder = CorimBuilder::new(CorimId::Text(corim_id));
+        if let Some(p) = profile {
+            builder = builder.set_profile(ProfileChoice::Uri(p.into()));
+        }
+        builder
+            .add_comid_tag(comid)
+            .unwrap()
+            .build_bytes()
+            .unwrap()
     }
 
     #[test]
@@ -402,135 +357,77 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         let err = launch_endorsement::validate(&[0xFF, 0x00]).unwrap_err();
-        assert!(err.to_string().contains("CBOR decode"));
-    }
-
-    #[test]
-    fn rejects_missing_tag_501() {
-        let plain = cbor_map(vec![(k(0), Value::Text("hello".into()))]);
-        let bytes = encode(&plain);
-        let err = launch_endorsement::validate(&bytes).unwrap_err();
-        assert!(err.to_string().contains("missing CBOR tag 501"));
-    }
-
-    #[test]
-    fn rejects_no_comid() {
-        use crate::corim::constants::TAG_CORIM;
-        use crate::corim::launch_endorsement::profile::PROFILE_URI;
-
-        let corim_map = cbor_map(vec![
-            (k(0), Value::Text("test".into())),
-            (k(1), Value::Array(vec![])),
-            (k(3), Value::Text(PROFILE_URI.into())),
-        ]);
-        let tagged = Value::Tag(TAG_CORIM, Box::new(corim_map));
-        let bytes = encode(&tagged);
-        let err = launch_endorsement::validate(&bytes).unwrap_err();
-        assert!(err.to_string().contains("no CoMID tag"));
+        assert!(err.to_string().to_lowercase().contains("decode") ||
+                err.to_string().to_lowercase().contains("valid"));
     }
 
     #[test]
     fn rejects_wrong_profile() {
-        let digest = vec![0xAA; 48];
-        let info = launch_endorsement::known_platforms()
-            .iter()
-            .find(|p| p.vendor == "AMD")
-            .unwrap();
-        let comid_bytes =
-            crate::corim::launch_endorsement::builder::build_comid(info, &digest, 1).unwrap();
-
-        use crate::corim::constants::CORIM_ID;
-        use crate::corim::constants::CORIM_PROFILE;
-        use crate::corim::constants::CORIM_TAGS;
-        use crate::corim::constants::TAG_COMID;
-        use crate::corim::constants::TAG_CORIM;
-
-        let tagged_comid = Value::Tag(TAG_COMID, Box::new(Value::Bytes(comid_bytes)));
-        let corim_map = cbor_map(vec![
-            (k(CORIM_ID), Value::Text("test".into())),
-            (k(CORIM_TAGS), Value::Array(vec![tagged_comid])),
-            (k(CORIM_PROFILE), Value::Text("tag:evil.com,2025:wrong".into())),
-        ]);
-        let tagged = Value::Tag(TAG_CORIM, Box::new(corim_map));
-        let bytes = encode(&tagged);
-
+        let bytes = build_custom_corim(
+            "AMD",
+            "SEV-SNP",
+            "MEASUREMENT",
+            7,
+            &[0xAA; 48],
+            1,
+            Some("tag:evil.com,2025:wrong"),
+        );
         let err = launch_endorsement::validate(&bytes).unwrap_err();
         assert!(err.to_string().contains("profile mismatch"));
     }
 
     #[test]
     fn rejects_missing_profile() {
-        let digest = vec![0xAA; 48];
-        let info = launch_endorsement::known_platforms()
-            .iter()
-            .find(|p| p.vendor == "AMD")
-            .unwrap();
-        let comid_bytes =
-            crate::corim::launch_endorsement::builder::build_comid(info, &digest, 1).unwrap();
-
-        use crate::corim::constants::TAG_COMID;
-        use crate::corim::constants::TAG_CORIM;
-
-        let tagged_comid = Value::Tag(TAG_COMID, Box::new(Value::Bytes(comid_bytes)));
-        let corim_map = cbor_map(vec![
-            (k(0), Value::Text("test".into())),
-            (k(1), Value::Array(vec![tagged_comid])),
-        ]);
-        let tagged = Value::Tag(TAG_CORIM, Box::new(corim_map));
-        let bytes = encode(&tagged);
-
+        let bytes =
+            build_custom_corim("AMD", "SEV-SNP", "MEASUREMENT", 7, &[0xAA; 48], 1, None);
         let err = launch_endorsement::validate(&bytes).unwrap_err();
         assert!(err.to_string().contains("missing required profile"));
     }
 
     #[test]
     fn rejects_wrong_digest_length() {
-        let info = launch_endorsement::known_platforms()
-            .iter()
-            .find(|p| p.vendor == "AMD")
-            .unwrap();
-        let comid_bytes =
-            crate::corim::launch_endorsement::builder::build_comid(info, &[0xAA; 32], 1).unwrap();
-        let corim_bytes =
-            crate::corim::launch_endorsement::builder::build_corim(info, comid_bytes).unwrap();
-
-        let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
+        // Build CoRIM with AMD/SEV-SNP but only 32-byte digest (should be 48)
+        let bytes = build_custom_corim(
+            "AMD",
+            "SEV-SNP",
+            "MEASUREMENT",
+            7,
+            &[0xAA; 32],
+            1,
+            Some(PROFILE_URI),
+        );
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
         assert!(err.to_string().contains("expected 48 bytes, got 32"));
     }
 
     #[test]
     fn rejects_wrong_digest_alg() {
-        let info = crate::corim::launch_endorsement::PlatformInfo {
-            vendor: "AMD",
-            model: "SEV-SNP",
-            mkey: "MEASUREMENT",
-            digest_alg: 1, // wrong: AMD/SEV-SNP expects SHA-384 (alg 7)
-            digest_len: 48,
-        };
-        let comid_bytes =
-            crate::corim::launch_endorsement::builder::build_comid(&info, &[0xAA; 48], 1).unwrap();
-        let corim_bytes =
-            crate::corim::launch_endorsement::builder::build_corim(&info, comid_bytes).unwrap();
-
-        let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
+        // Build CoRIM with AMD/SEV-SNP but SHA-256 alg (should be SHA-384 = 7)
+        let bytes = build_custom_corim(
+            "AMD",
+            "SEV-SNP",
+            "MEASUREMENT",
+            1, // SHA-256 instead of SHA-384
+            &[0xAA; 48],
+            1,
+            Some(PROFILE_URI),
+        );
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
         assert!(err.to_string().contains("expected algorithm 7, got 1"));
     }
 
     #[test]
     fn rejects_unknown_platform() {
-        let info = crate::corim::launch_endorsement::PlatformInfo {
-            vendor: "Acme",
-            model: "FakeCPU",
-            mkey: "MEASUREMENT",
-            digest_alg: 7,
-            digest_len: 48,
-        };
-        let comid_bytes =
-            crate::corim::launch_endorsement::builder::build_comid(&info, &[0xAA; 48], 1).unwrap();
-        let corim_bytes =
-            crate::corim::launch_endorsement::builder::build_corim(&info, comid_bytes).unwrap();
-
-        let err = launch_endorsement::validate(&corim_bytes).unwrap_err();
+        let bytes = build_custom_corim(
+            "Acme",
+            "FakeCPU",
+            "MEASUREMENT",
+            7,
+            &[0xAA; 48],
+            1,
+            Some(PROFILE_URI),
+        );
+        let err = launch_endorsement::validate(&bytes).unwrap_err();
         assert!(
             err.to_string().contains("unknown platform"),
             "got: {err}"

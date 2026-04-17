@@ -19,7 +19,8 @@ pub use igvm_defs::IgvmPlatformType;
 ///
 /// `tag-id = UUIDv5(TAG_ID_NAMESPACE, "{vendor}/{model}")`
 pub const TAG_ID_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-    0x85, 0xf3, 0xf1, 0xc2, 0x22, 0xa8, 0x44, 0x1e, 0xa1, 0xb9, 0xbc, 0xcf, 0xb6, 0x3e, 0xd5, 0xf7,
+    0x85, 0xf3, 0xf1, 0xc2, 0x22, 0xa8, 0x44, 0x1e, 0xa1, 0xb9, 0xbc, 0xcf, 0xb6, 0x3e, 0xd5,
+    0xf7,
 ]);
 
 // Platform properties
@@ -33,11 +34,13 @@ pub(crate) struct PlatformInfo {
     pub digest_len: usize,
 }
 
+/// Named Information Hash Algorithm ID for SHA-256 (RFC 6920).
+const NI_SHA256: i64 = 1;
+/// Named Information Hash Algorithm ID for SHA-384 (RFC 6920).
+const NI_SHA384: i64 = 7;
+
 /// Canonical list of supported platforms.
 pub(crate) fn known_platforms() -> &'static [PlatformInfo] {
-    use crate::corim::constants::NI_SHA256;
-    use crate::corim::constants::NI_SHA384;
-
     &[
         PlatformInfo {
             vendor: "Intel",
@@ -90,45 +93,24 @@ pub enum Error {
     /// Digest length does not match the platform's expected size.
     #[error("digest length mismatch: expected {expected}, got {actual}")]
     DigestLength { expected: usize, actual: usize },
-    /// CBOR encoding failed.
-    #[error("CBOR encode failed")]
-    Encode(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// CoRIM building or encoding failed.
+    #[error("CoRIM build failed")]
+    Build(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Errors from launch endorsement validation.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ValidationError {
-    /// CBOR decoding failed.
-    #[error("CBOR decode failed")]
-    Decode(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// Expected CBOR tag not found.
-    #[error("missing CBOR tag {expected}")]
-    MissingTag { expected: u64 },
-    /// Required map key not found.
-    #[error("missing key {key} in {context}")]
-    MissingKey { key: i64, context: &'static str },
-    /// A value had an unexpected CBOR type.
-    #[error("expected {expected} in {context}")]
-    UnexpectedType {
-        expected: &'static str,
-        context: &'static str,
-    },
-    /// No CoMID tag (tag 506) found in the tags array.
-    #[error("no CoMID tag (506) found in tags array")]
-    NoComid,
+    /// CoRIM structural validation failed (from the corim crate).
+    #[error("CoRIM validation failed: {0}")]
+    CorimValidation(#[from] corim::ValidationError),
     /// Multiple CoMID tags found; profile requires exactly one.
     #[error("multiple CoMID tags found; profile requires exactly one")]
     MultipleComids,
     /// The CoRIM is missing the required profile URI.
     #[error("missing required profile URI")]
     MissingProfile,
-    /// The triples map is missing reference-triples.
-    #[error("triples map has no reference triples")]
-    EmptyTriples,
-    /// The conditional-endorsement-series triple is required but missing.
-    #[error("conditional-endorsement-series triple is required by profile")]
-    MissingCes,
     /// The CoRIM profile URI does not match the expected profile.
     #[error("profile mismatch: expected {expected:?}, got {actual:?}")]
     ProfileMismatch { expected: String, actual: String },
@@ -144,6 +126,15 @@ pub enum ValidationError {
     /// SVN field is missing or malformed.
     #[error("invalid SVN: {0}")]
     InvalidSvn(String),
+    /// The triples map is missing reference-triples.
+    #[error("triples map has no reference triples")]
+    EmptyTriples,
+    /// The conditional-endorsement-series triple is required but missing.
+    #[error("conditional-endorsement-series triple is required by profile")]
+    MissingCes,
+    /// Structural issue in the decoded CoMID.
+    #[error("{0}")]
+    Structure(String),
     /// COSE_Sign1 envelope is structurally invalid.
     #[error("invalid COSE_Sign1 envelope")]
     CoseSign1(#[from] crate::corim::CoseSign1Error),
@@ -187,8 +178,7 @@ pub fn generate(
         });
     }
 
-    let comid_bytes = builder::build_comid(info, launch_digest, svn)?;
-    builder::build_corim(info, comid_bytes)
+    builder::build_corim_bytes(info, launch_digest, svn)
 }
 
 /// Validate and decode a CoRIM launch endorsement document.
