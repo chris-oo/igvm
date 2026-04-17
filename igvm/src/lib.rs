@@ -40,6 +40,21 @@ use zerocopy::KnownLayout;
 #[cfg(feature = "igvm-c")]
 pub mod c_api;
 
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub mod corim;
+
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub mod measurement;
+
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+mod serializer;
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub use serializer::{IgvmPlatformMeasurement, IgvmSerializer};
+
 pub mod hv_defs;
 pub mod page_table;
 pub mod registers;
@@ -2255,6 +2270,12 @@ pub enum Error {
     InvalidFixedHeaderArch(u32),
     #[error("merged igvm files are not the same revision")]
     MergeRevision,
+    #[cfg(feature = "corim")]
+    #[error("CoRIM generation failed: {0}")]
+    CorimGeneration(String),
+    #[cfg(feature = "corim")]
+    #[error("measurement computation failed: {0}")]
+    MeasurementFailed(String),
 }
 
 /// Architecture for an IGVM file.
@@ -2474,6 +2495,39 @@ impl FixedHeader {
             FixedHeader::V2(raw) => raw.checksum,
         }
     }
+}
+
+/// Pre-defined CoRIM templates for IGVM endorsements.
+///
+/// Each variant represents a fixed CoRIM structure with
+/// well-defined semantics. The caller supplies only the variable parameters
+/// (e.g., SVN), and the template determines the full CBOR layout.
+/// The launch measurement digest is computed automatically from the IGVM
+/// file's headers.
+///
+/// Used with [`IgvmSerializer::add_corim`].
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+#[derive(Debug, Clone)]
+pub enum CorimTemplate {
+    /// A launch endorsement template containing a security version number.
+    ///
+    /// The launch measurement digest is computed automatically from the IGVM
+    /// file's directive headers using the platform-specific measurement
+    /// algorithm (SNP launch digest, TDX MRTD, or VBS boot digest).
+    ///
+    /// Instantiates a CoRIM with:
+    /// - A **reference-values** triple for the computed launch measurement
+    /// - A **conditional-endorsement-series** triple mapping that digest
+    ///   to the SVN
+    LaunchEndorsement {
+        /// The ISV security version number to endorse.
+        svn: u64,
+    },
+    /// The architectural CoRIM template defined by vendors.
+    Architectural,
+    /// A custom CoRIM template with user-provided bytes.
+    Custom(Vec<u8>),
 }
 
 impl IgvmFile {
@@ -3208,6 +3262,11 @@ impl IgvmFile {
     /// Get the initialization headers in this file.
     pub fn initializations(&self) -> &[IgvmInitializationHeader] {
         self.initialization_headers.as_slice()
+    }
+
+    /// Get a mutable reference to the initialization headers in this file.
+    pub(crate) fn initializations_mut(&mut self) -> &mut Vec<IgvmInitializationHeader> {
+        &mut self.initialization_headers
     }
 
     /// Get the directive headers in this file.
