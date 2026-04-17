@@ -44,6 +44,10 @@ pub mod c_api;
 #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
 pub mod corim;
 
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+pub mod measurement;
+
 pub mod hv_defs;
 pub mod page_table;
 pub mod registers;
@@ -2487,23 +2491,26 @@ impl FixedHeader {
 ///
 /// Each variant represents a fixed CoRIM structure with
 /// well-defined semantics. The caller supplies only the variable parameters
-/// (e.g., digest and SVN), and the template determines the full CBOR layout.
+/// (e.g., SVN), and the template determines the full CBOR layout.
+/// The launch measurement digest is computed automatically from the IGVM
+/// file's headers.
 ///
 /// Used with [`IgvmFile::with_corim`].
 #[cfg(feature = "corim")]
 #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
 #[derive(Debug, Clone)]
 pub enum CorimTemplate {
-    /// A launch endorsement template containing a launch measurement digest and SVN.
+    /// A launch endorsement template containing a security version number.
+    ///
+    /// The launch measurement digest is computed automatically from the IGVM
+    /// file's directive headers using the platform-specific measurement
+    /// algorithm (SNP launch digest, TDX MRTD, or VBS boot digest).
     ///
     /// Instantiates a CoRIM with:
-    /// - A **reference-values** triple for the launch measurement
+    /// - A **reference-values** triple for the computed launch measurement
     /// - A **conditional-endorsement-series** triple mapping that digest
     ///   to the SVN
     LaunchEndorsement {
-        /// The raw launch measurement digest bytes.
-        /// Must match the platform's expected length (48 for SHA-384, 32 for SHA-256).
-        launch_digest: Vec<u8>,
         /// The ISV security version number to endorse.
         svn: u64,
     },
@@ -3673,9 +3680,9 @@ impl IgvmFile {
 
     /// Attach a CoRIM endorsement to this IGVM file.
     ///
-    /// Looks up the compatibility mask for the given platform type from the
-    /// file's platform headers, generates a CoRIM document from the template,
-    /// and embeds it as a CoRIM document initialization header
+    /// Computes the platform-specific launch measurement digest from the
+    /// file's headers, generates a CoRIM document, and embeds it as a CoRIM
+    /// document initialization header
     /// ([`IgvmInitializationHeader::CorimDocument`]).
     ///
     /// # Arguments
@@ -3690,8 +3697,8 @@ impl IgvmFile {
     /// # Errors
     ///
     /// Returns [`Error::CorimGeneration`] if the platform type is not found
-    /// in the file's platform headers, or if CoRIM generation fails (e.g.,
-    /// wrong digest length for the platform, or unsupported platform type).
+    /// in the file's platform headers, if measurement computation fails, or
+    /// if CoRIM generation fails (e.g., unsupported platform type).
     #[cfg(feature = "corim")]
     #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
     pub fn with_corim(
@@ -3714,7 +3721,42 @@ impl IgvmFile {
             })?;
 
         let corim_bytes = match template {
-            CorimTemplate::LaunchEndorsement { launch_digest, svn } => {
+            CorimTemplate::LaunchEndorsement { svn } => {
+                // Compute the platform-specific launch measurement digest.
+                let launch_digest = match platform {
+                    IgvmPlatformType::SEV_SNP => {
+                        crate::measurement::generate_snp_measurement(
+                            &self.initialization_headers,
+                            &self.directive_headers,
+                            compatibility_mask,
+                        )
+                        .map_err(|e| Error::CorimGeneration(e.to_string()))?
+                        .to_vec()
+                    }
+                    IgvmPlatformType::TDX => {
+                        crate::measurement::generate_tdx_measurement(
+                            &self.directive_headers,
+                            compatibility_mask,
+                        )
+                        .map_err(|e| Error::CorimGeneration(e.to_string()))?
+                        .to_vec()
+                    }
+                    IgvmPlatformType::VSM_ISOLATION => {
+                        crate::measurement::generate_vbs_measurement(
+                            &self.directive_headers,
+                            compatibility_mask,
+                            false, // enable_debug
+                        )
+                        .map_err(|e| Error::CorimGeneration(e.to_string()))?
+                        .to_vec()
+                    }
+                    _ => {
+                        return Err(Error::CorimGeneration(format!(
+                            "unsupported platform type for measurement: {platform:?}"
+                        )))
+                    }
+                };
+
                 crate::corim::launch_endorsement::generate(platform, &launch_digest, svn)
                     .map_err(|e| Error::CorimGeneration(e.to_string()))?
             }
