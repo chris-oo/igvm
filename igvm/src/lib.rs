@@ -48,6 +48,12 @@ pub mod corim;
 #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
 pub mod measurement;
 
+#[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
+mod serializer;
+#[cfg(feature = "corim")]
+pub use serializer::{IgvmPlatformMeasurement, IgvmSerializer};
+
 pub mod hv_defs;
 pub mod page_table;
 pub mod registers;
@@ -2311,7 +2317,7 @@ impl IgvmRevision {
         }
     }
 
-    fn fixed_header_size(&self) -> usize {
+    pub(crate) fn fixed_header_size(&self) -> usize {
         match self {
             IgvmRevision::V1 => size_of::<IGVM_FIXED_HEADER>(),
             IgvmRevision::V2 { .. } => size_of::<IGVM_FIXED_HEADER_V2>(),
@@ -2323,10 +2329,10 @@ impl IgvmRevision {
 /// the binary format.
 #[derive(Debug, Clone)]
 pub struct IgvmFile {
-    revision: IgvmRevision,
-    platform_headers: Vec<IgvmPlatformHeader>,
-    initialization_headers: Vec<IgvmInitializationHeader>,
-    directive_headers: Vec<IgvmDirectiveHeader>,
+    pub(crate) revision: IgvmRevision,
+    pub(crate) platform_headers: Vec<IgvmPlatformHeader>,
+    pub(crate) initialization_headers: Vec<IgvmInitializationHeader>,
+    pub(crate) directive_headers: Vec<IgvmDirectiveHeader>,
 }
 
 impl fmt::Display for IgvmFile {
@@ -2416,28 +2422,28 @@ fn extract_individual_masks(mut compatibility_mask: u32) -> Vec<u32> {
 
 /// Represents an IGVM fixed header.
 #[derive(Debug, Clone)]
-enum FixedHeader {
+pub(crate) enum FixedHeader {
     V1(IGVM_FIXED_HEADER),
     V2(IGVM_FIXED_HEADER_V2),
 }
 
 impl FixedHeader {
     /// Get the fixed header as raw bytes.
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         match self {
             FixedHeader::V1(raw) => raw.as_bytes(),
             FixedHeader::V2(raw) => raw.as_bytes(),
         }
     }
 
-    fn set_total_file_size(&mut self, size: u32) {
+    pub(crate) fn set_total_file_size(&mut self, size: u32) {
         match self {
             FixedHeader::V1(raw) => raw.total_file_size = size,
             FixedHeader::V2(raw) => raw.total_file_size = size,
         }
     }
 
-    fn set_checksum(&mut self, checksum: u32) {
+    pub(crate) fn set_checksum(&mut self, checksum: u32) {
         match self {
             FixedHeader::V1(raw) => raw.checksum = checksum,
             FixedHeader::V2(raw) => raw.checksum = checksum,
@@ -2495,7 +2501,7 @@ impl FixedHeader {
 /// The launch measurement digest is computed automatically from the IGVM
 /// file's headers.
 ///
-/// Used with [`IgvmFile::with_corim`].
+/// Used with [`IgvmSerializer::add_corim`].
 #[cfg(feature = "corim")]
 #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
 #[derive(Debug, Clone)]
@@ -3680,100 +3686,6 @@ impl IgvmFile {
     /// in self, and m is the number of headers in other.
     pub fn merge_simple(&mut self, other: IgvmFile) -> Result<(), Error> {
         self.merge_internal(other, false)
-    }
-
-    /// Attach a CoRIM endorsement to this IGVM file.
-    ///
-    /// Computes the platform-specific launch measurement digest from the
-    /// file's headers, generates a CoRIM document, and embeds it as a CoRIM
-    /// document initialization header
-    /// ([`IgvmInitializationHeader::CorimDocument`]).
-    ///
-    /// # Arguments
-    ///
-    /// * `platform` — The target IGVM platform type. Must match one of the
-    ///   platform headers already in this file. Only
-    ///   [`IgvmPlatformType::SEV_SNP`], [`IgvmPlatformType::TDX`], and
-    ///   [`IgvmPlatformType::VSM_ISOLATION`] are supported for CoRIM generation.
-    /// * `template` — The CoRIM template to instantiate. Currently only
-    ///   [`CorimTemplate::LaunchEndorsement`] is supported.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::CorimGeneration`] if the platform type is not found
-    /// in the file's platform headers, if measurement computation fails, or
-    /// if CoRIM generation fails (e.g., unsupported platform type).
-    #[cfg(feature = "corim")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
-    pub fn with_corim(
-        &mut self,
-        platform: IgvmPlatformType,
-        template: CorimTemplate,
-    ) -> Result<(), Error> {
-        // Look up the compatibility mask from the platform headers.
-        let compatibility_mask = self
-            .platform_headers
-            .iter()
-            .find_map(|h| match h {
-                IgvmPlatformHeader::SupportedPlatform(info) if info.platform_type == platform => {
-                    Some(info.compatibility_mask)
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                Error::CorimGeneration(format!("no platform header found for {platform:?}"))
-            })?;
-
-        let corim_bytes = match template {
-            CorimTemplate::LaunchEndorsement { svn } => {
-                // Compute the platform-specific launch measurement digest.
-                let launch_digest = match platform {
-                    IgvmPlatformType::SEV_SNP => {
-                        crate::measurement::generate_snp_measurement(
-                            &self.initialization_headers,
-                            &self.directive_headers,
-                            compatibility_mask,
-                        )
-                        .map_err(|e| Error::CorimGeneration(e.to_string()))?
-                        .to_vec()
-                    }
-                    IgvmPlatformType::TDX => {
-                        crate::measurement::generate_tdx_measurement(
-                            &self.directive_headers,
-                            compatibility_mask,
-                        )
-                        .map_err(|e| Error::CorimGeneration(e.to_string()))?
-                        .to_vec()
-                    }
-                    IgvmPlatformType::VSM_ISOLATION => {
-                        crate::measurement::generate_vbs_measurement(
-                            &self.directive_headers,
-                            compatibility_mask,
-                            false, // enable_debug
-                        )
-                        .map_err(|e| Error::CorimGeneration(e.to_string()))?
-                        .to_vec()
-                    }
-                    _ => {
-                        return Err(Error::CorimGeneration(format!(
-                            "unsupported platform type for measurement: {platform:?}"
-                        )))
-                    }
-                };
-
-                crate::corim::launch_endorsement::generate(platform, &launch_digest, svn)
-                    .map_err(|e| Error::CorimGeneration(e.to_string()))?
-            },
-            CorimTemplate::Architectural | CorimTemplate::Custom(_) => todo!()
-        };
-
-        self.initialization_headers
-            .push(IgvmInitializationHeader::CorimDocument {
-                compatibility_mask,
-                document: corim_bytes,
-            });
-
-        Ok(())
     }
 }
 
