@@ -11,7 +11,6 @@
 
 pub(crate) mod builder;
 pub mod profile;
-mod validate;
 
 pub use igvm_defs::IgvmPlatformType;
 
@@ -98,67 +97,6 @@ pub enum Error {
     Build(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Errors from launch endorsement validation.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum ValidationError {
-    /// CoRIM structural validation failed (from the corim crate).
-    #[error("CoRIM validation failed: {0}")]
-    CorimValidation(#[from] corim::ValidationError),
-    /// Multiple CoMID tags found; profile requires exactly one.
-    #[error("multiple CoMID tags found; profile requires exactly one")]
-    MultipleComids,
-    /// The CoRIM is missing the required profile URI.
-    #[error("missing required profile URI")]
-    MissingProfile,
-    /// The CoRIM profile URI does not match the expected profile.
-    #[error("profile mismatch: expected {expected:?}, got {actual:?}")]
-    ProfileMismatch { expected: String, actual: String },
-    /// The tag-id does not match the expected UUIDv5 derivation.
-    #[error("tag-id mismatch: expected {expected:?}, got {actual:?}")]
-    TagIdMismatch { expected: String, actual: String },
-    /// The vendor/model does not match any supported platform.
-    #[error("unknown platform: vendor={vendor:?}, model={model:?}")]
-    UnknownPlatform { vendor: String, model: String },
-    /// Digest algorithm or length doesn't match the platform.
-    #[error("invalid digest: {0}")]
-    InvalidDigest(String),
-    /// SVN field is missing or malformed.
-    #[error("invalid SVN: {0}")]
-    InvalidSvn(String),
-    /// The triples map is missing reference-triples.
-    #[error("triples map has no reference triples")]
-    EmptyTriples,
-    /// The conditional-endorsement-series triple is required but missing.
-    #[error("conditional-endorsement-series triple is required by profile")]
-    MissingCes,
-    /// Structural issue in the decoded CoMID.
-    #[error("{0}")]
-    Structure(String),
-    /// COSE_Sign1 envelope is structurally invalid.
-    #[error("invalid COSE_Sign1 envelope")]
-    CoseSign1(#[from] crate::corim::CoseSign1Error),
-}
-
-/// A parsed launch endorsement extracted from a CoRIM document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchEndorsement {
-    /// Platform vendor (e.g. `"AMD"`, `"Intel"`, `"Microsoft"`).
-    pub vendor: String,
-    /// Platform model (e.g. `"SEV-SNP"`, `"TDX"`, `"VBS"`).
-    pub model: String,
-    /// The CoMID tag-id (UUIDv5-derived string).
-    pub tag_id: String,
-    /// The measurement key (e.g. `"MEASUREMENT"`, `"MRTD"`).
-    pub mkey: String,
-    /// Digest algorithm ID (e.g. 7 = SHA-384, 1 = SHA-256).
-    pub digest_alg: i64,
-    /// The raw digest bytes from the reference-values triple.
-    pub digest: Vec<u8>,
-    /// The endorsed exact SVN value.
-    pub svn: u64,
-}
-
 // Public API
 
 /// Generate a CoRIM launch endorsement for the given platform.
@@ -179,12 +117,4 @@ pub fn generate(
     }
 
     builder::build_corim_bytes(info, launch_digest, svn)
-}
-
-/// Validate and decode a CoRIM launch endorsement document.
-///
-/// Enforces strict profile conformance. See the [`profile`] module for
-/// the full list of constraints checked.
-pub fn validate(bytes: &[u8]) -> Result<LaunchEndorsement, ValidationError> {
-    validate::validate(bytes)
 }

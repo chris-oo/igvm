@@ -2514,6 +2514,10 @@ pub enum CorimTemplate {
         /// The ISV security version number to endorse.
         svn: u64,
     },
+    /// The architectural CoRIM template defined by vendors.
+    Architectural,
+    /// A custom CoRIM template with user-provided bytes.
+    Custom(Vec<u8>),
 }
 
 impl IgvmFile {
@@ -3759,7 +3763,8 @@ impl IgvmFile {
 
                 crate::corim::launch_endorsement::generate(platform, &launch_digest, svn)
                     .map_err(|e| Error::CorimGeneration(e.to_string()))?
-            }
+            },
+            CorimTemplate::Architectural | CorimTemplate::Custom(_) => todo!()
         };
 
         self.initialization_headers
