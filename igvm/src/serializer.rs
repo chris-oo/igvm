@@ -32,13 +32,12 @@
 //! # }
 //! ```
 
-use crate::{
-    CorimTemplate, Error, FileDataSerializer, FixedHeader, IgvmFile, IgvmInitializationHeader,
-    IgvmPlatformHeader,
-};
-use igvm_defs::*;
-use std::mem::size_of;
-use zerocopy::IntoBytes;
+use crate::CorimTemplate;
+use crate::Error;
+use crate::IgvmFile;
+use crate::IgvmInitializationHeader;
+use crate::IgvmPlatformHeader;
+use igvm_defs::IgvmPlatformType;
 
 /// A per-platform launch measurement computed from an IGVM file's headers.
 #[derive(Debug, Clone)]
@@ -106,7 +105,9 @@ impl<'a> IgvmSerializer<'a> {
                 _ => None,
             })
             .ok_or_else(|| {
-                Error::CorimGeneration(format!("no platform header found for {platform:?}"))
+                Error::MeasurementFailed(format!(
+                    "no platform header found for {platform:?}"
+                ))
             })
     }
 
@@ -147,7 +148,7 @@ impl<'a> IgvmSerializer<'a> {
                     self.file.directives(),
                     compatibility_mask,
                 )
-                .map_err(|e| Error::CorimGeneration(e.to_string()))?
+                .map_err(|e| Error::MeasurementFailed(e.to_string()))?
                 .to_vec()
             }
             IgvmPlatformType::TDX => {
@@ -155,7 +156,7 @@ impl<'a> IgvmSerializer<'a> {
                     self.file.directives(),
                     compatibility_mask,
                 )
-                .map_err(|e| Error::CorimGeneration(e.to_string()))?
+                .map_err(|e| Error::MeasurementFailed(e.to_string()))?
                 .to_vec()
             }
             IgvmPlatformType::VSM_ISOLATION => {
@@ -164,11 +165,11 @@ impl<'a> IgvmSerializer<'a> {
                     compatibility_mask,
                     false, // enable_debug
                 )
-                .map_err(|e| Error::CorimGeneration(e.to_string()))?
+                .map_err(|e| Error::MeasurementFailed(e.to_string()))?
                 .to_vec()
             }
             _ => {
-                return Err(Error::CorimGeneration(format!(
+                return Err(Error::MeasurementFailed(format!(
                     "unsupported platform type for measurement: {platform:?}"
                 )))
             }
@@ -247,121 +248,17 @@ impl<'a> IgvmSerializer<'a> {
     /// This produces the same binary format as [`IgvmFile::serialize`],
     /// but with additional initialization headers appended.
     pub fn serialize(&self, output: &mut Vec<u8>) -> Result<(), Error> {
-        let file = self.file;
-
-        // The IgvmFile was validated at construction time, so platform headers
-        // are already known to be valid.
-
-        // Combine the file's init headers with any extra ones from the builder.
-        let all_init_headers: Vec<&IgvmInitializationHeader> = file
-            .initialization_headers
-            .iter()
-            .chain(self.extra_init_headers.iter())
-            .collect();
-
-        // Calculate variable header section size.
-        let mut variable_header_section_size = 0;
-        for header in file.platform_headers.iter() {
-            variable_header_section_size += header.header_size();
+        if self.extra_init_headers.is_empty() {
+            // Fast path: nothing added, delegate directly.
+            self.file.serialize(output)
+        } else {
+            // Clone the file and append the extra init headers so that
+            // the original IgvmFile::serialize handles all the work.
+            let mut file = self.file.clone();
+            file.initializations_mut()
+                .extend(self.extra_init_headers.iter().cloned());
+            file.serialize(output)
         }
-        for header in &all_init_headers {
-            variable_header_section_size += header.header_size();
-        }
-        for header in file.directive_headers.iter() {
-            variable_header_section_size += header.header_size();
-        }
-
-        assert_eq!(variable_header_section_size % 8, 0);
-
-        let file_data_section_start =
-            file.revision.fixed_header_size() + variable_header_section_size;
-
-        let mut variable_header_binary = Vec::new();
-
-        // Add platform headers
-        for header in &file.platform_headers {
-            match header {
-                IgvmPlatformHeader::SupportedPlatform(platform) => {
-                    let header = IGVM_VHS_VARIABLE_HEADER {
-                        typ: IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM,
-                        length: platform.as_bytes().len() as u32,
-                    };
-                    variable_header_binary.extend_from_slice(header.as_bytes());
-                    variable_header_binary.extend_from_slice(platform.as_bytes());
-                }
-            }
-        }
-
-        let mut file_data = FileDataSerializer::new(file_data_section_start);
-
-        // Add initialization headers (original + extra)
-        for header in &all_init_headers {
-            header
-                .write_binary_header(&mut variable_header_binary, &mut file_data)
-                .map_err(Error::InvalidBinaryInitializationHeader)?;
-            assert_eq!(variable_header_binary.len() % 8, 0);
-        }
-
-        // Add directive headers
-        for header in &file.directive_headers {
-            header
-                .write_binary_header(&mut variable_header_binary, &mut file_data)
-                .map_err(Error::InvalidBinaryDirectiveHeader)?;
-            assert_eq!(variable_header_binary.len() % 8, 0);
-        }
-
-        assert_eq!(variable_header_section_size, variable_header_binary.len());
-
-        let mut fixed_header = match file.revision {
-            crate::IgvmRevision::V1 => FixedHeader::V1(IGVM_FIXED_HEADER {
-                magic: IGVM_MAGIC_VALUE,
-                format_version: IGVM_FORMAT_VERSION_1,
-                variable_header_offset: size_of::<IGVM_FIXED_HEADER>() as u32,
-                variable_header_size: variable_header_binary
-                    .len()
-                    .try_into()
-                    .map_err(|_| Error::VariableHeaderSectionTooLarge)?,
-                total_file_size: 0,
-                checksum: 0,
-            }),
-            crate::IgvmRevision::V2 { arch, page_size } => {
-                FixedHeader::V2(IGVM_FIXED_HEADER_V2 {
-                    magic: IGVM_MAGIC_VALUE,
-                    format_version: IGVM_FORMAT_VERSION_2,
-                    variable_header_offset: size_of::<IGVM_FIXED_HEADER_V2>() as u32,
-                    variable_header_size: variable_header_binary
-                        .len()
-                        .try_into()
-                        .map_err(|_| Error::VariableHeaderSectionTooLarge)?,
-                    total_file_size: 0,
-                    checksum: 0,
-                    architecture: arch.into(),
-                    page_size,
-                })
-            }
-        };
-
-        let mut file_data = file_data.take();
-        let total_file_size =
-            fixed_header.as_bytes().len() + variable_header_binary.len() + file_data.len();
-
-        fixed_header.set_total_file_size(
-            total_file_size
-                .try_into()
-                .map_err(|_| Error::TotalFileSizeTooLarge)?,
-        );
-
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(fixed_header.as_bytes());
-        hasher.update(&variable_header_binary);
-        let checksum = hasher.finalize();
-        fixed_header.set_checksum(checksum);
-
-        output.extend_from_slice(fixed_header.as_bytes());
-        output.append(&mut variable_header_binary);
-        output.append(&mut file_data);
-
-        Ok(())
     }
 }
 

@@ -52,6 +52,7 @@ pub mod measurement;
 #[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
 mod serializer;
 #[cfg(feature = "corim")]
+#[cfg_attr(docsrs, doc(cfg(feature = "corim")))]
 pub use serializer::{IgvmPlatformMeasurement, IgvmSerializer};
 
 pub mod hv_defs;
@@ -2272,6 +2273,9 @@ pub enum Error {
     #[cfg(feature = "corim")]
     #[error("CoRIM generation failed: {0}")]
     CorimGeneration(String),
+    #[cfg(feature = "corim")]
+    #[error("measurement computation failed: {0}")]
+    MeasurementFailed(String),
 }
 
 /// Architecture for an IGVM file.
@@ -2317,7 +2321,7 @@ impl IgvmRevision {
         }
     }
 
-    pub(crate) fn fixed_header_size(&self) -> usize {
+    fn fixed_header_size(&self) -> usize {
         match self {
             IgvmRevision::V1 => size_of::<IGVM_FIXED_HEADER>(),
             IgvmRevision::V2 { .. } => size_of::<IGVM_FIXED_HEADER_V2>(),
@@ -2329,10 +2333,10 @@ impl IgvmRevision {
 /// the binary format.
 #[derive(Debug, Clone)]
 pub struct IgvmFile {
-    pub(crate) revision: IgvmRevision,
-    pub(crate) platform_headers: Vec<IgvmPlatformHeader>,
-    pub(crate) initialization_headers: Vec<IgvmInitializationHeader>,
-    pub(crate) directive_headers: Vec<IgvmDirectiveHeader>,
+    revision: IgvmRevision,
+    platform_headers: Vec<IgvmPlatformHeader>,
+    initialization_headers: Vec<IgvmInitializationHeader>,
+    directive_headers: Vec<IgvmDirectiveHeader>,
 }
 
 impl fmt::Display for IgvmFile {
@@ -2422,28 +2426,28 @@ fn extract_individual_masks(mut compatibility_mask: u32) -> Vec<u32> {
 
 /// Represents an IGVM fixed header.
 #[derive(Debug, Clone)]
-pub(crate) enum FixedHeader {
+enum FixedHeader {
     V1(IGVM_FIXED_HEADER),
     V2(IGVM_FIXED_HEADER_V2),
 }
 
 impl FixedHeader {
     /// Get the fixed header as raw bytes.
-    pub(crate) fn as_bytes(&self) -> &[u8] {
+    fn as_bytes(&self) -> &[u8] {
         match self {
             FixedHeader::V1(raw) => raw.as_bytes(),
             FixedHeader::V2(raw) => raw.as_bytes(),
         }
     }
 
-    pub(crate) fn set_total_file_size(&mut self, size: u32) {
+    fn set_total_file_size(&mut self, size: u32) {
         match self {
             FixedHeader::V1(raw) => raw.total_file_size = size,
             FixedHeader::V2(raw) => raw.total_file_size = size,
         }
     }
 
-    pub(crate) fn set_checksum(&mut self, checksum: u32) {
+    fn set_checksum(&mut self, checksum: u32) {
         match self {
             FixedHeader::V1(raw) => raw.checksum = checksum,
             FixedHeader::V2(raw) => raw.checksum = checksum,
@@ -3258,6 +3262,11 @@ impl IgvmFile {
     /// Get the initialization headers in this file.
     pub fn initializations(&self) -> &[IgvmInitializationHeader] {
         self.initialization_headers.as_slice()
+    }
+
+    /// Get a mutable reference to the initialization headers in this file.
+    pub(crate) fn initializations_mut(&mut self) -> &mut Vec<IgvmInitializationHeader> {
+        &mut self.initialization_headers
     }
 
     /// Get the directive headers in this file.
