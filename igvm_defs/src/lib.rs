@@ -479,11 +479,11 @@ pub struct IGVM_VHS_SUPPORTED_PLATFORM_V2 {
 /// capability as disabled, as there would be no legal configuration.
 ///
 /// For example, a platform that wants to force debug to be disabled, would set
-/// `reject_debug_disabled` to 1, and `reject_debug_enabled` to 0. A platform
+/// `reject_debug_disabled` to 0, and `reject_debug_enabled` to 1. A platform
 /// that does not care about debug, would set both `reject_debug_disabled` and
 /// `reject_debug_enabled` to 0. A platform that wants to force debug to be
-/// enabled would set `reject_debug_disabled` to 0, and `reject_debug_enabled`
-/// to 1.
+/// enabled would set `reject_debug_disabled` to 1, and `reject_debug_enabled`
+/// to 0.
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SupportedPlatformRequirements {
