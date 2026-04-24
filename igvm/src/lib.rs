@@ -180,13 +180,69 @@ impl FileDataSerializer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgvmPlatformHeader {
     SupportedPlatform(IGVM_VHS_SUPPORTED_PLATFORM),
+    /// PROVISIONAL: v2 platform header. The wire type
+    /// `IGVM_VHT_SUPPORTED_PLATFORM_V2 = 0x2` is provisional and will be
+    /// assigned a final value when the IGVM spec is updated.
+    SupportedPlatformV2(IGVM_VHS_SUPPORTED_PLATFORM_V2),
 }
 
 impl IgvmPlatformHeader {
+    /// Returns the compatibility mask for this platform header.
+    pub fn compatibility_mask(&self) -> u32 {
+        match self {
+            IgvmPlatformHeader::SupportedPlatform(info) => info.compatibility_mask,
+            IgvmPlatformHeader::SupportedPlatformV2(info) => info.compatibility_mask,
+        }
+    }
+
+    /// Returns a mutable reference to the compatibility mask.
+    fn compatibility_mask_mut(&mut self) -> &mut u32 {
+        match self {
+            IgvmPlatformHeader::SupportedPlatform(info) => &mut info.compatibility_mask,
+            IgvmPlatformHeader::SupportedPlatformV2(info) => &mut info.compatibility_mask,
+        }
+    }
+
+    /// Returns the highest VTL for this platform header.
+    pub fn highest_vtl(&self) -> u8 {
+        match self {
+            IgvmPlatformHeader::SupportedPlatform(info) => info.highest_vtl,
+            IgvmPlatformHeader::SupportedPlatformV2(info) => info.highest_vtl,
+        }
+    }
+
+    /// Returns the platform type for this platform header.
+    pub fn platform_type(&self) -> IgvmPlatformType {
+        match self {
+            IgvmPlatformHeader::SupportedPlatform(info) => info.platform_type,
+            IgvmPlatformHeader::SupportedPlatformV2(info) => info.platform_type,
+        }
+    }
+
+    /// Returns the shared GPA boundary for this platform header.
+    pub fn shared_gpa_boundary(&self) -> u64 {
+        match self {
+            IgvmPlatformHeader::SupportedPlatform(info) => info.shared_gpa_boundary,
+            IgvmPlatformHeader::SupportedPlatformV2(info) => info.shared_gpa_boundary,
+        }
+    }
+
+    /// Returns the platform requirements for this header.
+    ///
+    /// Returns `None` for [`IgvmPlatformHeader::SupportedPlatform`] (v1),
+    /// and `Some` for [`IgvmPlatformHeader::SupportedPlatformV2`].
+    pub fn requirements(&self) -> Option<SupportedPlatformRequirements> {
+        match self {
+            IgvmPlatformHeader::SupportedPlatform(_) => None,
+            IgvmPlatformHeader::SupportedPlatformV2(info) => Some(info.requirements),
+        }
+    }
+
     /// Get the in file variable header size of the given type.
     fn header_size(&self) -> usize {
         let additional = match self {
             IgvmPlatformHeader::SupportedPlatform(platform) => size_of_val(platform),
+            IgvmPlatformHeader::SupportedPlatformV2(platform) => size_of_val(platform),
         };
 
         size_of::<IGVM_VHS_VARIABLE_HEADER>() + additional
@@ -200,7 +256,65 @@ impl IgvmPlatformHeader {
             IgvmPlatformHeader::SupportedPlatform(_) => {
                 IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM
             }
+            IgvmPlatformHeader::SupportedPlatformV2(_) => {
+                IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM_V2
+            }
         }
+    }
+
+    /// Validates platform type, version, and shared GPA boundary constraints.
+    /// Shared between v1 and v2 validation.
+    fn validate_platform_type_fields(
+        platform_type: IgvmPlatformType,
+        platform_version: u16,
+        shared_gpa_boundary: u64,
+    ) -> Result<(), BinaryHeaderError> {
+        match platform_type {
+            IgvmPlatformType::NATIVE => {
+                if platform_version != IGVM_NATIVE_PLATFORM_VERSION {
+                    return Err(BinaryHeaderError::InvalidPlatformVersion);
+                }
+                if shared_gpa_boundary != 0 {
+                    return Err(BinaryHeaderError::InvalidSharedGpaBoundary);
+                }
+            }
+            IgvmPlatformType::VSM_ISOLATION => {
+                if platform_version != IGVM_VSM_ISOLATION_PLATFORM_VERSION {
+                    return Err(BinaryHeaderError::InvalidPlatformVersion);
+                }
+                if shared_gpa_boundary != 0 {
+                    return Err(BinaryHeaderError::InvalidSharedGpaBoundary);
+                }
+            }
+            IgvmPlatformType::SEV_SNP => {
+                if platform_version != IGVM_SEV_SNP_PLATFORM_VERSION {
+                    return Err(BinaryHeaderError::InvalidPlatformVersion);
+                }
+                // TODO: shared gpa boundary req?
+            }
+            IgvmPlatformType::TDX => {
+                if platform_version != IGVM_TDX_PLATFORM_VERSION {
+                    return Err(BinaryHeaderError::InvalidPlatformVersion);
+                }
+                // TODO: shared gpa boundary req?
+            }
+            IgvmPlatformType::SEV => {
+                if platform_version != IGVM_SEV_PLATFORM_VERSION {
+                    return Err(BinaryHeaderError::InvalidPlatformVersion);
+                }
+                // TODO: shared gpa boundary req?
+            }
+            IgvmPlatformType::SEV_ES => {
+                if platform_version != IGVM_SEV_ES_PLATFORM_VERSION {
+                    return Err(BinaryHeaderError::InvalidPlatformVersion);
+                }
+                // TODO: shared gpa boundary req?
+            }
+            _ => {
+                return Err(BinaryHeaderError::InvalidPlatformType);
+            }
+        }
+        Ok(())
     }
 
     /// Checks if this header contains valid state.
@@ -217,54 +331,47 @@ impl IgvmPlatformHeader {
                     return Err(BinaryHeaderError::InvalidVtl);
                 }
 
-                // Platform type must be valid.
-                match info.platform_type {
-                    IgvmPlatformType::NATIVE => {
-                        if info.platform_version != IGVM_NATIVE_PLATFORM_VERSION {
-                            return Err(BinaryHeaderError::InvalidPlatformVersion);
-                        }
-                        if info.shared_gpa_boundary != 0 {
-                            return Err(BinaryHeaderError::InvalidSharedGpaBoundary);
-                        }
-                    }
-                    IgvmPlatformType::VSM_ISOLATION => {
-                        if info.platform_version != IGVM_VSM_ISOLATION_PLATFORM_VERSION {
-                            return Err(BinaryHeaderError::InvalidPlatformVersion);
-                        }
+                Self::validate_platform_type_fields(
+                    info.platform_type,
+                    info.platform_version,
+                    info.shared_gpa_boundary,
+                )?;
 
-                        if info.shared_gpa_boundary != 0 {
-                            return Err(BinaryHeaderError::InvalidSharedGpaBoundary);
-                        }
-                    }
-                    IgvmPlatformType::SEV_SNP => {
-                        if info.platform_version != IGVM_SEV_SNP_PLATFORM_VERSION {
-                            return Err(BinaryHeaderError::InvalidPlatformVersion);
-                        }
+                Ok(())
+            }
+            IgvmPlatformHeader::SupportedPlatformV2(info) => {
+                // Only one compatibility_mask value can be set.
+                if info.compatibility_mask.count_ones() != 1 {
+                    return Err(BinaryHeaderError::InvalidCompatibilityMask);
+                }
 
-                        // TODO: shared gpa boundary req?
-                    }
+                // Highest vtl must be 0 or 2.
+                if info.highest_vtl != 0 && info.highest_vtl != 2 {
+                    return Err(BinaryHeaderError::InvalidVtl);
+                }
 
-                    IgvmPlatformType::TDX => {
-                        if info.platform_version != IGVM_TDX_PLATFORM_VERSION {
-                            return Err(BinaryHeaderError::InvalidPlatformVersion);
-                        }
-                        // TODO: shared gpa boundary req?
-                    }
-                    IgvmPlatformType::SEV => {
-                        if info.platform_version != IGVM_SEV_PLATFORM_VERSION {
-                            return Err(BinaryHeaderError::InvalidPlatformVersion);
-                        }
-                        // TODO: shared gpa boundary req?
-                    }
-                    IgvmPlatformType::SEV_ES => {
-                        if info.platform_version != IGVM_SEV_ES_PLATFORM_VERSION {
-                            return Err(BinaryHeaderError::InvalidPlatformVersion);
-                        }
-                        // TODO: shared gpa boundary req?
-                    }
-                    _ => {
-                        return Err(BinaryHeaderError::InvalidPlatformType);
-                    }
+                Self::validate_platform_type_fields(
+                    info.platform_type,
+                    info.platform_version,
+                    info.shared_gpa_boundary,
+                )?;
+
+                // Reserved requirement bits must be zero.
+                if info.requirements.reserved() != 0 {
+                    return Err(BinaryHeaderError::ReservedNotZero);
+                }
+
+                // Both reject bits for the same capability cannot be set simultaneously.
+                // Setting both would mean the loader can never satisfy the requirement.
+                if info.requirements.reject_debug_disabled() != 0
+                    && info.requirements.reject_debug_enabled() != 0
+                {
+                    return Err(BinaryHeaderError::InvalidRequirements);
+                }
+                if info.requirements.reject_migration_disabled() != 0
+                    && info.requirements.reject_migration_enabled() != 0
+                {
+                    return Err(BinaryHeaderError::InvalidRequirements);
                 }
 
                 Ok(())
@@ -284,7 +391,13 @@ impl IgvmPlatformHeader {
         {
             let header = IgvmPlatformHeader::SupportedPlatform(read_header(&mut variable_headers)?);
             header.validate()?;
-
+            Ok((header, variable_headers))
+        } else if header.typ == IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM_V2
+            && header.length == size_of::<IGVM_VHS_SUPPORTED_PLATFORM_V2>() as u32
+        {
+            let header =
+                IgvmPlatformHeader::SupportedPlatformV2(read_header(&mut variable_headers)?);
+            header.validate()?;
             Ok((header, variable_headers))
         } else {
             Err(BinaryHeaderError::InvalidVariableHeaderType)
@@ -306,6 +419,13 @@ impl IgvmPlatformHeader {
                 append_header(
                     platform,
                     IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM,
+                    variable_headers,
+                );
+            }
+            IgvmPlatformHeader::SupportedPlatformV2(platform) => {
+                append_header(
+                    platform,
+                    IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM_V2,
                     variable_headers,
                 );
             }
@@ -933,6 +1053,8 @@ pub enum BinaryHeaderError {
     InvalidSharedGpaBoundary,
     #[error("reserved values not zero")]
     ReservedNotZero,
+    #[error("invalid requirement bits: both reject bits for the same capability are set")]
+    InvalidRequirements,
     #[error("VBS vp context has no registers")]
     NoVbsVpContextRegisters,
     #[error("relocation region size not aligned to 4k")]
@@ -2079,6 +2201,12 @@ pub enum Error {
     InvalidBinaryDirectiveHeader(#[source] BinaryHeaderError),
     #[error("multiple platform headers with the same isolation type")]
     MultiplePlatformHeadersWithSameIsolation,
+    #[error("duplicate v2 platform headers with the same platform type and requirements")]
+    DuplicatePlatformV2Headers,
+    #[error(
+        "ambiguous compatibility mask: two headers share a mask but are not a valid v1/v2 fallback pair"
+    )]
+    AmbiguousCompatibilityMask,
     #[error("invalid parameter area index")]
     InvalidParameterAreaIndex,
     #[error("invalid platform type")]
@@ -2339,14 +2467,20 @@ impl IgvmFile {
     /// Validates that:
     /// - There is at least 1 platform header
     /// - Each isolation type is valid
-    /// - Each isolation type is only used once
+    /// - V1: each platform type appears at most once
+    /// - V2: no two v2 headers have the same (platform_type, requirements) pair
     /// - Isolation type is consistent with arch
+    ///
+    /// Note: compatibility mask uniqueness is checked separately by
+    /// [`Self::validate_platform_header_masks`] and is only enforced at file
+    /// construction time (not during pre-fixup merge validation).
     fn validate_platform_headers<'a>(
         revision: IgvmRevision,
         platform_headers: impl Iterator<Item = &'a IgvmPlatformHeader>,
     ) -> Result<(), Error> {
         let mut at_least_one = false;
-        let mut isolation_types = HashMap::new();
+        let mut v1_infos: Vec<&'a IGVM_VHS_SUPPORTED_PLATFORM> = Vec::new();
+        let mut v2_infos: Vec<&'a IGVM_VHS_SUPPORTED_PLATFORM_V2> = Vec::new();
 
         for header in platform_headers {
             at_least_one = true;
@@ -2372,24 +2506,113 @@ impl IgvmFile {
                         }
                         _ => return Err(Error::InvalidPlatformType),
                     }
-
-                    if let Some(prev) = isolation_types.insert(info.platform_type, info) {
-                        tracing::trace!(
-                            current = ?info,
-                            prev = ?prev,
-                            "current platform header conflicts with previous duplicate header"
-                        );
-                        return Err(Error::MultiplePlatformHeadersWithSameIsolation);
+                    v1_infos.push(info);
+                }
+                IgvmPlatformHeader::SupportedPlatformV2(info) => {
+                    match info.platform_type {
+                        IgvmPlatformType::VSM_ISOLATION => {}
+                        IgvmPlatformType::SEV_SNP
+                        | IgvmPlatformType::TDX
+                        | IgvmPlatformType::NATIVE
+                        | IgvmPlatformType::SEV
+                        | IgvmPlatformType::SEV_ES => {
+                            if revision.arch() != Arch::X64 {
+                                return Err(Error::PlatformArchUnsupported {
+                                    arch: revision.arch(),
+                                    platform: info.platform_type,
+                                });
+                            }
+                        }
+                        _ => return Err(Error::InvalidPlatformType),
                     }
+                    v2_infos.push(info);
                 }
             }
         }
 
         if !at_least_one {
-            Err(Error::NoPlatformHeaders)
-        } else {
-            Ok(())
+            return Err(Error::NoPlatformHeaders);
         }
+
+        // V1: at most one header per platform_type.
+        for i in 0..v1_infos.len() {
+            for j in (i + 1)..v1_infos.len() {
+                if v1_infos[i].platform_type == v1_infos[j].platform_type {
+                    tracing::trace!(
+                        current = ?v1_infos[j],
+                        prev = ?v1_infos[i],
+                        "duplicate v1 platform headers for the same platform type"
+                    );
+                    return Err(Error::MultiplePlatformHeadersWithSameIsolation);
+                }
+            }
+        }
+
+        // V2: no two headers may have the same (platform_type, requirements) pair.
+        for i in 0..v2_infos.len() {
+            for j in (i + 1)..v2_infos.len() {
+                if v2_infos[i].platform_type == v2_infos[j].platform_type
+                    && v2_infos[i].requirements == v2_infos[j].requirements
+                {
+                    tracing::trace!(
+                        current = ?v2_infos[j],
+                        prev = ?v2_infos[i],
+                        "duplicate v2 platform headers with same platform type and requirements"
+                    );
+                    return Err(Error::DuplicatePlatformV2Headers);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate compatibility mask uniqueness across the given platform headers.
+    ///
+    /// Each compatibility mask must be unique, with one exception: a v1 header
+    /// may share a mask with exactly one v2 header of the same platform type
+    /// (the v1 acts as a fallback for older loaders selecting that context).
+    ///
+    /// This check is separate from [`Self::validate_platform_headers`] because
+    /// merge calls that function on the pre-fixup combined headers where mask
+    /// conflicts are expected and will be resolved by the fixup step.
+    fn validate_platform_header_masks<'a>(
+        platform_headers: impl Iterator<Item = &'a IgvmPlatformHeader>,
+    ) -> Result<(), Error> {
+        let mut v1_masks: Vec<(u32, IgvmPlatformType)> = Vec::new();
+        let mut v2_masks: Vec<(u32, IgvmPlatformType)> = Vec::new();
+
+        for header in platform_headers {
+            match header {
+                IgvmPlatformHeader::SupportedPlatform(info) => {
+                    v1_masks.push((info.compatibility_mask, info.platform_type));
+                }
+                IgvmPlatformHeader::SupportedPlatformV2(info) => {
+                    v2_masks.push((info.compatibility_mask, info.platform_type));
+                }
+            }
+        }
+
+        let all_masks: Vec<(u32, IgvmPlatformType, bool)> = v1_masks
+            .iter()
+            .map(|&(m, pt)| (m, pt, false))
+            .chain(v2_masks.iter().map(|&(m, pt)| (m, pt, true)))
+            .collect();
+
+        for i in 0..all_masks.len() {
+            for j in (i + 1)..all_masks.len() {
+                let (mask_i, pt_i, is_v2_i) = all_masks[i];
+                let (mask_j, pt_j, is_v2_j) = all_masks[j];
+                if mask_i == mask_j {
+                    // Sharing a mask is only valid for a v1+v2 pair of the same platform_type.
+                    if is_v2_i == is_v2_j || pt_i != pt_j {
+                        return Err(Error::AmbiguousCompatibilityMask);
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Check if the given initialization headers are valid.
@@ -2689,11 +2912,19 @@ impl IgvmFile {
         for header in &self.platform_headers {
             match header {
                 IgvmPlatformHeader::SupportedPlatform(platform) => {
-                    let header = IGVM_VHS_VARIABLE_HEADER {
+                    let fixed = IGVM_VHS_VARIABLE_HEADER {
                         typ: IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM,
                         length: platform.as_bytes().len() as u32,
                     };
-                    variable_header_binary.extend_from_slice(header.as_bytes());
+                    variable_header_binary.extend_from_slice(fixed.as_bytes());
+                    variable_header_binary.extend_from_slice(platform.as_bytes());
+                }
+                IgvmPlatformHeader::SupportedPlatformV2(platform) => {
+                    let fixed = IGVM_VHS_VARIABLE_HEADER {
+                        typ: IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM_V2,
+                        length: platform.as_bytes().len() as u32,
+                    };
+                    variable_header_binary.extend_from_slice(fixed.as_bytes());
                     variable_header_binary.extend_from_slice(platform.as_bytes());
                 }
             }
@@ -2789,6 +3020,7 @@ impl IgvmFile {
         }
 
         Self::validate_platform_headers(revision, platform_headers.iter())?;
+        Self::validate_platform_header_masks(platform_headers.iter())?;
         let validation_info =
             Self::validate_initialization_headers(revision, &initialization_headers)?;
         Self::validate_directive_headers(revision, &directive_headers, validation_info)?;
@@ -2923,7 +3155,18 @@ impl IgvmFile {
                             // Setup filter_mask based on isolation_filter
                             if let Some(filter_type) = isolation_filter {
                                 if filter_type == info.platform_type {
-                                    filter_mask = info.compatibility_mask;
+                                    filter_mask |= info.compatibility_mask;
+                                }
+                            }
+
+                            mask_map.insert(info.compatibility_mask, info.platform_type);
+                        }
+                        IgvmPlatformHeader::SupportedPlatformV2(info) => {
+                            // For v2 headers, accumulate all masks for the matching
+                            // platform type so the filter includes all contexts.
+                            if let Some(filter_type) = isolation_filter {
+                                if filter_type == info.platform_type {
+                                    filter_mask |= info.compatibility_mask;
                                 }
                             }
 
@@ -3165,6 +3408,12 @@ impl IgvmFile {
                 other.platform_headers.iter()
             )
             .is_ok());
+            debug_assert!(
+                Self::validate_platform_header_masks(self.platform_headers.iter()).is_ok()
+            );
+            debug_assert!(
+                Self::validate_platform_header_masks(other.platform_headers.iter()).is_ok()
+            );
             let self_info =
                 Self::validate_initialization_headers(self.revision, &self.initialization_headers)
                     .expect("valid file");
@@ -3201,40 +3450,41 @@ impl IgvmFile {
         // Check the platform headers for each file to see if they need to be
         // fixed up or not. Do this by first checking which masks are used in
         // `self`, and then creating a fixup map for `other`.
-        let mut used_compatibility_masks =
-            self.platform_headers
-                .iter()
-                .fold(0, |mask, header| match header {
-                    IgvmPlatformHeader::SupportedPlatform(platform) => {
-                        mask | platform.compatibility_mask
-                    }
-                });
+        let mut used_compatibility_masks = self
+            .platform_headers
+            .iter()
+            .fold(0u32, |mask, header| mask | header.compatibility_mask());
         let mut fixup_masks_map = HashMap::new();
-        for header in &other.platform_headers {
-            match header {
-                IgvmPlatformHeader::SupportedPlatform(platform) => {
-                    if platform.compatibility_mask & used_compatibility_masks != 0 {
-                        // Find the next free compatibility mask
-                        let free_bit = used_compatibility_masks.trailing_ones();
 
-                        if free_bit > 32 {
-                            // This can never be reached, as there aren't 32
-                            // different isolation architectures and the earlier
-                            // validation of platform headers should have
-                            // failed. But return an error anyways if this case
-                            // is ever reached.
-                            return Err(Error::NoFreeCompatibilityMasks);
-                        }
+        // Collect unique masks from `other` that conflict with masks in `self`.
+        // Deduplication handles the case where a v1+v2 fallback pair in `other`
+        // legitimately share the same mask.
+        let mut seen_other_masks = std::collections::HashSet::new();
+        let conflicting_masks: Vec<u32> = other
+            .platform_headers
+            .iter()
+            .map(|h| h.compatibility_mask())
+            .filter(|&m| m & used_compatibility_masks != 0)
+            .filter(|m| seen_other_masks.insert(*m))
+            .collect();
 
-                        let new_mask = 1u32 << free_bit;
-                        used_compatibility_masks |= new_mask;
+        for mask in conflicting_masks {
+            // Find the next free compatibility mask
+            let free_bit = used_compatibility_masks.trailing_ones();
 
-                        assert!(fixup_masks_map
-                            .insert(platform.compatibility_mask, new_mask)
-                            .is_none());
-                    }
-                }
+            if free_bit >= 32 {
+                // This can never be reached, as there aren't 32
+                // different isolation architectures and the earlier
+                // validation of platform headers should have
+                // failed. But return an error anyways if this case
+                // is ever reached.
+                return Err(Error::NoFreeCompatibilityMasks);
             }
+
+            let new_mask = 1u32 << free_bit;
+            used_compatibility_masks |= new_mask;
+
+            assert!(fixup_masks_map.insert(mask, new_mask).is_none());
         }
 
         let fixup_masks_map = fixup_masks_map;
@@ -3306,11 +3556,7 @@ impl IgvmFile {
 
         // Fixup all compatibility masks in platform and init headers.
         for header in &mut other.platform_headers {
-            match header {
-                IgvmPlatformHeader::SupportedPlatform(platform) => {
-                    fixup_mask(&mut platform.compatibility_mask)
-                }
-            }
+            fixup_mask(header.compatibility_mask_mut());
         }
 
         for header in &mut other.initialization_headers {
@@ -4688,4 +4934,364 @@ mod tests {
     }
 
     // Test serialize and deserialize
+
+    /// Helper to construct a v2 platform header.
+    fn new_platform_v2(
+        compatibility_mask: u32,
+        platform_type: IgvmPlatformType,
+        requirements: SupportedPlatformRequirements,
+    ) -> IgvmPlatformHeader {
+        IgvmPlatformHeader::SupportedPlatformV2(IGVM_VHS_SUPPORTED_PLATFORM_V2 {
+            compatibility_mask,
+            highest_vtl: 0,
+            platform_type,
+            platform_version: 1,
+            shared_gpa_boundary: 0,
+            requirements,
+        })
+    }
+
+    /// Requirements for a debug-only context: reject_debug_disabled=1,
+    /// reject_debug_enabled=0 (loader must NOT have debug disabled).
+    fn reqs_debug_only() -> SupportedPlatformRequirements {
+        SupportedPlatformRequirements::new()
+            .with_reject_debug_disabled(1)
+            .with_reject_debug_enabled(0)
+    }
+
+    /// Requirements for a release-only context: reject_debug_enabled=1,
+    /// reject_debug_disabled=0 (loader must NOT have debug enabled).
+    fn reqs_release_only() -> SupportedPlatformRequirements {
+        SupportedPlatformRequirements::new()
+            .with_reject_debug_disabled(0)
+            .with_reject_debug_enabled(1)
+    }
+
+    /// Requirements that accept any debug state: both bits zero.
+    fn reqs_any_debug() -> SupportedPlatformRequirements {
+        SupportedPlatformRequirements::new()
+    }
+
+    mod platform_v2 {
+        use super::*;
+
+        // ── Round-trip tests ──────────────────────────────────────────────────
+
+        /// V2 platform header round-trips through serialize/deserialize inside
+        /// a V1 fixed-header IGVM file.
+        #[test]
+        fn test_v2_platform_in_v1_file_roundtrip() {
+            let file = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![new_platform_v2(
+                    0x1,
+                    IgvmPlatformType::VSM_ISOLATION,
+                    reqs_release_only(),
+                )],
+                initialization_headers: vec![],
+                directive_headers: vec![new_page_data(0, 1, &vec![0xAB; PAGE_SIZE_4K as usize])],
+            };
+            let mut binary = Vec::new();
+            file.serialize(&mut binary).unwrap();
+            let deserialized = IgvmFile::new_from_binary(&binary, None).unwrap();
+            assert_igvm_equal(&file, &deserialized);
+        }
+
+        /// Two v2 headers for the same platform with different requirements
+        /// round-trip correctly.
+        #[test]
+        fn test_v2_two_contexts_roundtrip() {
+            let file = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    new_platform_v2(0x2, IgvmPlatformType::VSM_ISOLATION, reqs_debug_only()),
+                ],
+                initialization_headers: vec![],
+                directive_headers: vec![
+                    new_page_data(0, 0x1, &vec![1u8; PAGE_SIZE_4K as usize]),
+                    new_page_data(0, 0x2, &vec![2u8; PAGE_SIZE_4K as usize]),
+                ],
+            };
+            let mut binary = Vec::new();
+            file.serialize(&mut binary).unwrap();
+            let deserialized = IgvmFile::new_from_binary(&binary, None).unwrap();
+            assert_igvm_equal(&file, &deserialized);
+        }
+
+        /// V1 fallback header sharing a mask with a v2 header round-trips correctly.
+        #[test]
+        fn test_v1_v2_fallback_roundtrip() {
+            let file = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![
+                    // v1 fallback for old loaders
+                    new_platform(0x1, IgvmPlatformType::VSM_ISOLATION),
+                    // v2 release context shares the same mask
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    // v2 debug context gets its own mask
+                    new_platform_v2(0x2, IgvmPlatformType::VSM_ISOLATION, reqs_debug_only()),
+                ],
+                initialization_headers: vec![],
+                directive_headers: vec![
+                    new_page_data(0, 0x1, &vec![1u8; PAGE_SIZE_4K as usize]),
+                    new_page_data(0, 0x2, &vec![2u8; PAGE_SIZE_4K as usize]),
+                ],
+            };
+            let mut binary = Vec::new();
+            file.serialize(&mut binary).unwrap();
+            let deserialized = IgvmFile::new_from_binary(&binary, None).unwrap();
+            assert_igvm_equal(&file, &deserialized);
+        }
+
+        // ── Invalid requirement-combination tests ─────────────────────────────
+
+        /// Both debug reject bits set simultaneously must be rejected.
+        #[test]
+        fn test_v2_both_debug_reject_bits_invalid() {
+            let bad_reqs = SupportedPlatformRequirements::new()
+                .with_reject_debug_disabled(1)
+                .with_reject_debug_enabled(1);
+            let header = IgvmPlatformHeader::SupportedPlatformV2(IGVM_VHS_SUPPORTED_PLATFORM_V2 {
+                compatibility_mask: 0x1,
+                highest_vtl: 0,
+                platform_type: IgvmPlatformType::VSM_ISOLATION,
+                platform_version: 1,
+                shared_gpa_boundary: 0,
+                requirements: bad_reqs,
+            });
+            assert!(matches!(
+                header.validate(),
+                Err(BinaryHeaderError::InvalidRequirements)
+            ));
+        }
+
+        /// Both migration reject bits set simultaneously must be rejected.
+        #[test]
+        fn test_v2_both_migration_reject_bits_invalid() {
+            let bad_reqs = SupportedPlatformRequirements::new()
+                .with_reject_migration_disabled(1)
+                .with_reject_migration_enabled(1);
+            let header = IgvmPlatformHeader::SupportedPlatformV2(IGVM_VHS_SUPPORTED_PLATFORM_V2 {
+                compatibility_mask: 0x1,
+                highest_vtl: 0,
+                platform_type: IgvmPlatformType::VSM_ISOLATION,
+                platform_version: 1,
+                shared_gpa_boundary: 0,
+                requirements: bad_reqs,
+            });
+            assert!(matches!(
+                header.validate(),
+                Err(BinaryHeaderError::InvalidRequirements)
+            ));
+        }
+
+        /// Non-zero reserved bits in requirements must be rejected.
+        #[test]
+        fn test_v2_nonzero_reserved_bits_invalid() {
+            let bad_reqs = SupportedPlatformRequirements::new().with_reserved(1); // any nonzero reserved
+            let header = IgvmPlatformHeader::SupportedPlatformV2(IGVM_VHS_SUPPORTED_PLATFORM_V2 {
+                compatibility_mask: 0x1,
+                highest_vtl: 0,
+                platform_type: IgvmPlatformType::VSM_ISOLATION,
+                platform_version: 1,
+                shared_gpa_boundary: 0,
+                requirements: bad_reqs,
+            });
+            assert!(matches!(
+                header.validate(),
+                Err(BinaryHeaderError::ReservedNotZero)
+            ));
+        }
+
+        // ── Duplicate-platform validation tests ───────────────────────────────
+
+        /// Two v2 headers for the same platform with the same requirements are rejected.
+        #[test]
+        fn test_v2_duplicate_same_requirements_rejected() {
+            let result = IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    new_platform_v2(0x2, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                ],
+                vec![],
+                vec![],
+            );
+            assert!(
+                matches!(result, Err(Error::DuplicatePlatformV2Headers)),
+                "expected DuplicatePlatformV2Headers, got {result:?}"
+            );
+        }
+
+        /// Three v2 headers for the same platform with three distinct requirement
+        /// combinations (release-only, debug-only, flexible/any) are accepted.
+        #[test]
+        fn test_v2_three_requirement_variants() {
+            IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    new_platform_v2(0x2, IgvmPlatformType::VSM_ISOLATION, reqs_debug_only()),
+                    new_platform_v2(0x4, IgvmPlatformType::VSM_ISOLATION, reqs_any_debug()),
+                ],
+                vec![],
+                vec![],
+            )
+            .expect(
+                "three v2 headers with distinct requirements (release, debug, any) should be valid",
+            );
+        }
+
+        /// Two v2 headers for the same platform with distinct requirements are accepted.
+        #[test]
+        fn test_v2_different_requirements_accepted() {
+            IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    new_platform_v2(0x2, IgvmPlatformType::VSM_ISOLATION, reqs_debug_only()),
+                ],
+                vec![],
+                vec![],
+            )
+            .expect("two v2 headers with distinct requirements should be valid");
+        }
+
+        /// Multiple v2 headers for multiple platforms with distinct requirements.
+        #[test]
+        fn test_v2_multiple_platforms_distinct_requirements() {
+            IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    new_platform_v2(0x2, IgvmPlatformType::VSM_ISOLATION, reqs_debug_only()),
+                    new_platform_v2(0x4, IgvmPlatformType::SEV_SNP, reqs_release_only()),
+                    new_platform_v2(0x8, IgvmPlatformType::SEV_SNP, reqs_debug_only()),
+                ],
+                vec![],
+                vec![],
+            )
+            .expect("four v2 headers across two platforms should be valid");
+        }
+
+        /// Two v2 headers sharing the same compatibility mask are rejected
+        /// (ambiguous even if requirements differ, since the mask is the
+        /// only selector a loader uses).
+        #[test]
+        fn test_v2_shared_mask_same_platform_rejected() {
+            let result = IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_debug_only()),
+                ],
+                vec![],
+                vec![],
+            );
+            assert!(
+                matches!(result, Err(Error::AmbiguousCompatibilityMask)),
+                "expected AmbiguousCompatibilityMask, got {result:?}"
+            );
+        }
+
+        /// A v1 header sharing a mask with a v2 header for the same platform is accepted.
+        #[test]
+        fn test_v1_v2_shared_mask_same_platform_accepted() {
+            IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform(0x1, IgvmPlatformType::VSM_ISOLATION),
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                ],
+                vec![],
+                vec![],
+            )
+            .expect("v1+v2 sharing a mask for the same platform should be valid fallback");
+        }
+
+        /// A v1 and v2 sharing a mask for DIFFERENT platform types is rejected.
+        #[test]
+        fn test_v1_v2_shared_mask_different_platform_rejected() {
+            let result = IgvmFile::new(
+                IgvmRevision::V1,
+                vec![
+                    new_platform(0x1, IgvmPlatformType::VSM_ISOLATION),
+                    new_platform_v2(0x1, IgvmPlatformType::SEV_SNP, reqs_release_only()),
+                ],
+                vec![],
+                vec![],
+            );
+            assert!(
+                matches!(result, Err(Error::AmbiguousCompatibilityMask)),
+                "expected AmbiguousCompatibilityMask, got {result:?}"
+            );
+        }
+
+        // ── Merge tests ───────────────────────────────────────────────────────
+
+        /// Merging two files each containing a v2 header with conflicting masks
+        /// rewrites the second file's mask.
+        #[test]
+        fn test_merge_v2_mask_rewrite() {
+            let data = vec![0xBBu8; PAGE_SIZE_4K as usize];
+            let mut a = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![new_platform_v2(
+                    0x1,
+                    IgvmPlatformType::VSM_ISOLATION,
+                    reqs_release_only(),
+                )],
+                initialization_headers: vec![],
+                directive_headers: vec![new_page_data(0, 0x1, &data)],
+            };
+            let b = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![new_platform_v2(
+                    0x1,
+                    IgvmPlatformType::SEV_SNP,
+                    reqs_release_only(),
+                )],
+                initialization_headers: vec![],
+                directive_headers: vec![new_page_data(1, 0x1, &data)],
+            };
+            a.merge_simple(b).unwrap();
+
+            // After merge: a keeps mask 0x1, b gets mask 0x2
+            assert_eq!(a.platform_headers[0].compatibility_mask(), 0x1);
+            assert_eq!(a.platform_headers[1].compatibility_mask(), 0x2);
+            // Directive for b's context is now tagged with mask 0x2
+            assert_eq!(a.directive_headers[1].compatibility_mask(), Some(0x2));
+        }
+
+        /// Merging a file with a v1+v2 fallback pair: both headers in the pair
+        /// get the same new mask when the pair's original mask conflicts.
+        #[test]
+        fn test_merge_v1_v2_fallback_pair_rewrite() {
+            let data = vec![0xCCu8; PAGE_SIZE_4K as usize];
+            // `self` occupies mask 0x1
+            let mut a = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![new_platform(0x1, IgvmPlatformType::SEV_SNP)],
+                initialization_headers: vec![],
+                directive_headers: vec![new_page_data(0, 0x1, &data)],
+            };
+            // `other` has a v1+v2 fallback pair, both using mask 0x1
+            let b = IgvmFile {
+                revision: IgvmRevision::V1,
+                platform_headers: vec![
+                    new_platform(0x1, IgvmPlatformType::VSM_ISOLATION),
+                    new_platform_v2(0x1, IgvmPlatformType::VSM_ISOLATION, reqs_release_only()),
+                ],
+                initialization_headers: vec![],
+                directive_headers: vec![new_page_data(1, 0x1, &data)],
+            };
+            a.merge_simple(b).unwrap();
+
+            // Both the v1 and v2 fallback headers should get the same new mask (0x2)
+            assert_eq!(a.platform_headers[1].compatibility_mask(), 0x2);
+            assert_eq!(a.platform_headers[2].compatibility_mask(), 0x2);
+            assert_eq!(a.directive_headers[1].compatibility_mask(), Some(0x2));
+        }
+    }
 }

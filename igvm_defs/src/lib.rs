@@ -237,6 +237,12 @@ pub enum IgvmVariableHeaderType {
     /// A supported platform structure described by
     /// [`IGVM_VHS_SUPPORTED_PLATFORM`].
     IGVM_VHT_SUPPORTED_PLATFORM = 0x1,
+    /// A supported platform v2 structure described by
+    /// [`IGVM_VHS_SUPPORTED_PLATFORM_V2`].
+    ///
+    /// PROVISIONAL: assigned for local prototype use only; the final value
+    /// will be assigned when the IGVM spec is updated.
+    IGVM_VHT_SUPPORTED_PLATFORM_V2 = 0x2,
 
     // These are IGVM_VHT_RANGE_INIT structures.
     /// The isolation architecture policy for the guest, as defined by
@@ -467,7 +473,7 @@ pub struct IGVM_VHS_SUPPORTED_PLATFORM_V2 {
     pub shared_gpa_boundary: u64,
     /// A field that describes bits supported by this platform.
     /// TODO: naming
-    pub requirments: SupportedPlatformRequirements,
+    pub requirements: SupportedPlatformRequirements,
 }
 
 /// Requirements for a supported platform. This is used by the loader to

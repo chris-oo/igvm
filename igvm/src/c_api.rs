@@ -134,6 +134,9 @@ fn translate_error(error: Error) -> IgvmResult {
         Error::MultiplePlatformHeadersWithSameIsolation => {
             IgvmResult::IGVMAPI_MULTIPLE_PLATFORM_HEADERS_WITH_SAME_ISOLATION
         }
+        Error::DuplicatePlatformV2Headers | Error::AmbiguousCompatibilityMask => {
+            IgvmResult::IGVMAPI_MULTIPLE_PLATFORM_HEADERS_WITH_SAME_ISOLATION
+        }
         Error::InvalidParameterAreaIndex => IgvmResult::IGVMAPI_INVALID_PARAMETER_AREA_INDEX,
         Error::InvalidPlatformType => IgvmResult::IGVMAPI_INVALID_PLATFORM_TYPE,
         Error::NoFreeCompatibilityMasks => IgvmResult::IGVMAPI_NO_FREE_COMPATIBILITY_MASKS,
